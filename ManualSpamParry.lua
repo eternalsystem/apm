@@ -1,6 +1,7 @@
 --[[
     Manual Spam Parry — Stripped from Allusive & UwU AP
-    Features: Manual Spam Parry, Keypress/Remote mode toggle, Animation Fix
+    Features: Manual Spam Parry, Keypress mode (default), Animation Fix
+    Remote mode loads in background if remotes are found
     Toggle UI with RightShift
 ]]
 
@@ -10,10 +11,8 @@ repeat task.wait() until game:IsLoaded()
 
 local Players            = game:GetService('Players')
 local Player             = Players.LocalPlayer
-local ReplicatedStorage  = game:GetService('ReplicatedStorage')
 local UserInputService   = game:GetService('UserInputService')
 local RunService         = game:GetService('RunService')
-local Debris             = game:GetService('Debris')
 local GuiService         = game:GetService('GuiService')
 local CoreGui            = game:GetService('CoreGui')
 local TweenService       = game:GetService('TweenService')
@@ -21,137 +20,40 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 
 -- ===================== STATE ===================== --
 
-local Remotes            = {}
-local PrivateKey         = nil
-local HashOne, HashTwo, HashThree
-local Parry_Key          = nil
-local Parries            = 0
-local firstParryFired    = false
-local firstParryType     = 'F_Key'
-local isMobile           = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
-local Last_Input         = UserInputService:GetLastInputType()
-
 local SpamEnabled        = false
-local KeypressMode       = false
+local KeypressMode       = true  -- default to Keypress (always works)
 local AnimFixEnabled     = false
-local Selected_Parry_Type = 'Camera'
+local RemoteReady        = false -- set to true when remote extraction succeeds
 
 local Connections        = {}
 
--- ===================== LPH STUBS ===================== --
+-- ===================== KEYPRESS SPAM (always works) ===================== --
 
+local function SpamKeypress()
+    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+end
+
+-- ===================== REMOTE EXTRACTION (background, optional) ===================== --
+
+local Remotes            = {}
+local PrivateKey         = nil
+local HashOne, HashTwo, HashThree
+local ShouldPlayerJump, MainRemote, GetOpponentPosition
+local Parries            = 0
+local firstParryFired    = false
+local firstParryType     = 'F_Key'
+local Selected_Parry_Type = 'Camera'
+local Closest_Entity     = nil
+
+local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+local Last_Input = UserInputService:GetLastInputType()
+
+-- LPH stubs
 if not LPH_OBFUSCATED then
     function LPH_JIT(f) return f end
     function LPH_JIT_MAX(f) return f end
     function LPH_NO_VIRTUALIZE(f) return f end
 end
-
--- ===================== REMOTE EXTRACTION ===================== --
-
-local PropertyChangeOrder = {}
-local gcFound = false
-
--- GC scan: find the parry handler by its signature
-warn("[MSP] Starting GC scan...")
-LPH_NO_VIRTUALIZE(function()
-    for _, Value in pairs(getgc(true)) do
-        if type(Value) == "function" and islclosure(Value) then
-            local Protos    = debug.getprotos(Value)
-            local Upvalues  = debug.getupvalues(Value)
-            local Constants = debug.getconstants(Value)
-            if Protos and Upvalues and Constants
-               and (#Protos == 4) and (#Upvalues == 24) and (#Constants == 104) then
-                Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
-                Parry_Key = debug.getupvalue(Value, 17)
-                Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
-                Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
-                gcFound = true
-                warn("[MSP] GC scan SUCCESS — found parry function")
-                break
-            end
-        end
-    end
-end)()
-
-if not gcFound then
-    warn("[MSP] GC scan FAILED — signature (#Protos==4, #Upvalues==24, #Constants==104) not found.")
-    warn("[MSP] Dumping all lclosures with 3-6 protos for debugging:")
-    for _, Value in pairs(getgc(true)) do
-        if type(Value) == "function" and islclosure(Value) then
-            local p = debug.getprotos(Value)
-            local u = debug.getupvalues(Value)
-            local c = debug.getconstants(Value)
-            if p and u and c and #p >= 3 and #p <= 6 then
-                warn(string.format("  -> Protos=%d  Upvalues=%d  Constants=%d", #p, #u, #c))
-            end
-        end
-    end
-    warn("[MSP] Script will hang at remote detection. Copy the dump above and send it so we can update the offsets.")
-end
-
--- Find the three obfuscated remotes by watching property changes
-warn("[MSP] Searching for obfuscated RemoteEvents...")
-local remoteCount = 0
-LPH_NO_VIRTUALIZE(function()
-    for _, Object in next, game:GetDescendants() do
-        if Object:IsA("RemoteEvent") and string.find(Object.Name, "\n") then
-            remoteCount += 1
-            Object.Changed:Once(function()
-                table.insert(PropertyChangeOrder, Object)
-                warn("[MSP] Remote property changed — total: " .. #PropertyChangeOrder)
-            end)
-        end
-    end
-end)()
-warn("[MSP] Found " .. remoteCount .. " obfuscated remotes, waiting for 3 property changes...")
-
-local waitStart = tick()
-repeat task.wait() until #PropertyChangeOrder == 3 or (tick() - waitStart > 15)
-
-if #PropertyChangeOrder < 3 then
-    warn("[MSP] TIMEOUT — only got " .. #PropertyChangeOrder .. "/3 property changes after 15s.")
-    warn("[MSP] The remote detection is outdated. Script cannot continue.")
-    return
-end
-
-warn("[MSP] All 3 remotes captured!")
-
-local ShouldPlayerJump    = PropertyChangeOrder[1]
-local MainRemote          = PropertyChangeOrder[2]
-local GetOpponentPosition = PropertyChangeOrder[3]
-
--- Hook __namecall to steal PrivateKey from the game's own remote calls
-warn("[MSP] Hooking __namecall for PrivateKey...")
-local __namecall
-__namecall = hookmetamethod(game, "__namecall", function(self, ...)
-    local Args   = {...}
-    local Method = getnamecallmethod()
-
-    if not checkcaller() and (Method == "FireServer") and string.find(self.Name, "\n") then
-        if Args[2] then
-            PrivateKey = Args[2]
-        end
-    end
-
-    return __namecall(self, ...)
-end)
-
--- Secondary Parry_Key extraction from the Block button
-warn("[MSP] Extracting Parry_Key from Block button...")
-for _, Value in pairs(getconnections(Player.PlayerGui.Hotbar.Block.Activated)) do
-    if Value and Value.Function and not iscclosure(Value.Function) then
-        for _, Value2 in pairs(getupvalues(Value.Function)) do
-            if type(Value2) == "function" then
-                Parry_Key = getupvalue(getupvalue(Value2, 2), 17)
-                break
-            end
-        end
-    end
-end
-warn("[MSP] Parry_Key: " .. tostring(Parry_Key))
-warn("[MSP] Setup complete — loading UI...")
-
--- ===================== CORE PARRY FUNCTIONS ===================== --
 
 local function updateNavigation(guiObject)
     GuiService.SelectedObject = guiObject
@@ -173,17 +75,18 @@ local function performFirstPress(parryType)
 end
 
 local function FireParry(...)
+    if not RemoteReady then return end
     ShouldPlayerJump:FireServer(HashOne, PrivateKey, ...)
     MainRemote:FireServer(HashTwo, PrivateKey, ...)
     GetOpponentPosition:FireServer(HashThree, PrivateKey, ...)
 end
 
-local Closest_Entity = nil
-
 local function FindClosestPlayer()
     local Max_Distance = math.huge
     local Found = nil
-    for _, Entity in pairs(workspace.Alive:GetChildren()) do
+    local ok, alive = pcall(function() return workspace.Alive:GetChildren() end)
+    if not ok then return nil end
+    for _, Entity in pairs(alive) do
         if tostring(Entity) ~= tostring(Player) then
             if Entity.PrimaryPart then
                 local d = Player:DistanceFromCharacter(Entity.PrimaryPart.Position)
@@ -200,7 +103,6 @@ end
 
 local function BuildParryData(Parry_Type)
     FindClosestPlayer()
-
     local Camera = workspace.CurrentCamera
     local MouseLoc
 
@@ -212,95 +114,82 @@ local function BuildParryData(Parry_Type)
     else
         MouseLoc = {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}
     end
-
     if isMobile then
         MouseLoc = {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}
     end
 
     local Events = {}
-    for _, v in pairs(workspace.Alive:GetChildren()) do
-        if v ~= Player.Character and v.PrimaryPart then
-            local screenPos = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
-            Events[tostring(v)] = screenPos
+    pcall(function()
+        for _, v in pairs(workspace.Alive:GetChildren()) do
+            if v ~= Player.Character and v.PrimaryPart then
+                Events[tostring(v)] = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+            end
         end
-    end
+    end)
 
     if Parry_Type == 'Camera' then
         return {0, Camera.CFrame, Events, MouseLoc}
-    end
-
-    if Parry_Type == 'Random' then
+    elseif Parry_Type == 'Random' then
         return {0, CFrame.new(Camera.CFrame.Position, Vector3.new(
-            math.random(-4000, 4000),
-            math.random(-4000, 4000),
-            math.random(-4000, 4000)
+            math.random(-4000, 4000), math.random(-4000, 4000), math.random(-4000, 4000)
         )), Events, MouseLoc}
-    end
-
-    if Parry_Type == 'Backwards' then
+    elseif Parry_Type == 'Backwards' then
         local dir = Camera.CFrame.LookVector * -10000
-        dir = Vector3.new(dir.X, 0, dir.Z)
-        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir), Events, MouseLoc}
-    end
-
-    if Parry_Type == 'Straight' then
+        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + Vector3.new(dir.X, 0, dir.Z)), Events, MouseLoc}
+    elseif Parry_Type == 'Straight' then
         local Aimed, ClosestDist = nil, math.huge
         local MV = Vector2.new(MouseLoc[1], MouseLoc[2])
-        for _, v in pairs(workspace.Alive:GetChildren()) do
-            if v ~= Player.Character and v.PrimaryPart then
-                local sp, onScreen = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
-                if onScreen then
-                    local d = (MV - Vector2.new(sp.X, sp.Y)).Magnitude
-                    if d < ClosestDist then ClosestDist = d; Aimed = v end
+        pcall(function()
+            for _, v in pairs(workspace.Alive:GetChildren()) do
+                if v ~= Player.Character and v.PrimaryPart then
+                    local sp, onScreen = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+                    if onScreen then
+                        local d = (MV - Vector2.new(sp.X, sp.Y)).Magnitude
+                        if d < ClosestDist then ClosestDist = d; Aimed = v end
+                    end
                 end
             end
-        end
+        end)
         local target = Aimed or Closest_Entity
-        if target and target.PrimaryPart then
+        if target and target.PrimaryPart and Player.Character and Player.Character.PrimaryPart then
             return {0, CFrame.new(Player.Character.PrimaryPart.Position, target.PrimaryPart.Position), Events, MouseLoc}
         end
         return {0, Camera.CFrame, Events, MouseLoc}
-    end
-
-    if Parry_Type == 'High' then
-        local dir = Camera.CFrame.UpVector * 10000
-        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir), Events, MouseLoc}
-    end
-
-    if Parry_Type == 'Left' then
-        local dir = Camera.CFrame.RightVector * 10000
-        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - dir), Events, MouseLoc}
-    end
-
-    if Parry_Type == 'Right' then
-        local dir = Camera.CFrame.RightVector * 10000
-        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir), Events, MouseLoc}
-    end
-
-    if Parry_Type == 'RandomTarget' then
+    elseif Parry_Type == 'High' then
+        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + Camera.CFrame.UpVector * 10000), Events, MouseLoc}
+    elseif Parry_Type == 'Left' then
+        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - Camera.CFrame.RightVector * 10000), Events, MouseLoc}
+    elseif Parry_Type == 'Right' then
+        return {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + Camera.CFrame.RightVector * 10000), Events, MouseLoc}
+    elseif Parry_Type == 'RandomTarget' then
         local candidates = {}
-        for _, v in pairs(workspace.Alive:GetChildren()) do
-            if v ~= Player.Character and v.PrimaryPart then
-                local sp, onScreen = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
-                if onScreen then
-                    table.insert(candidates, { character = v, screenXY = {sp.X, sp.Y} })
+        pcall(function()
+            for _, v in pairs(workspace.Alive:GetChildren()) do
+                if v ~= Player.Character and v.PrimaryPart then
+                    local sp, onScreen = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+                    if onScreen then
+                        table.insert(candidates, { character = v, screenXY = {sp.X, sp.Y} })
+                    end
                 end
             end
-        end
+        end)
         if #candidates > 0 then
             local pick = candidates[math.random(1, #candidates)]
             return {0, CFrame.new(Player.Character.PrimaryPart.Position, pick.character.PrimaryPart.Position), Events, pick.screenXY}
         end
         return {0, Camera.CFrame, Events, {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}}
     end
-
-    -- fallback: Camera
     return {0, Camera.CFrame, Events, MouseLoc}
 end
 
-local function DoParry(Parry_Type)
-    local data = BuildParryData(Parry_Type)
+local function DoRemoteParry(Parry_Type)
+    if not RemoteReady then
+        -- fallback to keypress if remotes aren't ready
+        SpamKeypress()
+        return
+    end
 
+    local data = BuildParryData(Parry_Type)
     if not firstParryFired then
         performFirstPress(firstParryType)
         firstParryFired = true
@@ -309,7 +198,6 @@ local function DoParry(Parry_Type)
     end
 
     if Parries > 7 then return end
-
     Parries += 1
     task.delay(0.5, function()
         if Parries > 0 then Parries -= 1 end
@@ -319,19 +207,17 @@ end
 -- ===================== SPAM LOGIC ===================== --
 
 local function StartSpam()
-    -- main spam connection
     Connections['ManualSpam'] = RunService.PreSimulation:Connect(function()
         if KeypressMode then
-            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+            SpamKeypress()
         else
-            DoParry(Selected_Parry_Type)
+            DoRemoteParry(Selected_Parry_Type)
         end
     end)
 
-    -- animation fix: parallel keypress so parry animation plays visually
-    if AnimFixEnabled then
+    if AnimFixEnabled and not KeypressMode then
         Connections['AnimFix'] = RunService.PreSimulation:Connect(function()
-            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+            SpamKeypress()
         end)
     end
 end
@@ -347,15 +233,21 @@ local function StopSpam()
     end
 end
 
+local function RestartSpamIfRunning()
+    if SpamEnabled then
+        StopSpam()
+        StartSpam()
+    end
+end
+
 local function UpdateAnimFix()
-    -- if spam is running, restart the anim fix connection to match current state
     if Connections['AnimFix'] then
         Connections['AnimFix']:Disconnect()
         Connections['AnimFix'] = nil
     end
-    if SpamEnabled and AnimFixEnabled then
+    if SpamEnabled and AnimFixEnabled and not KeypressMode then
         Connections['AnimFix'] = RunService.PreSimulation:Connect(function()
-            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+            SpamKeypress()
         end)
     end
 end
@@ -413,7 +305,7 @@ local titleCorner = Instance.new('UICorner')
 titleCorner.CornerRadius = UDim.new(0, 10)
 titleCorner.Parent = Title
 
--- helper: create a toggle row
+-- helper: toggle row
 local function MakeToggle(parent, yPos, label, default, onChange)
     local row = Instance.new('Frame')
     row.Size = UDim2.new(1, -20, 0, 28)
@@ -443,12 +335,9 @@ local function MakeToggle(parent, yPos, label, default, onChange)
     btn.BorderSizePixel = 0
     btn.Parent = row
 
-    local btnCorner = Instance.new('UICorner')
-    btnCorner.CornerRadius = UDim.new(0, 6)
-    btnCorner.Parent = btn
+    Instance.new('UICorner', btn).CornerRadius = UDim.new(0, 6)
 
     local state = default
-
     btn.MouseButton1Click:Connect(function()
         state = not state
         btn.Text = state and 'ON' or 'OFF'
@@ -468,7 +357,7 @@ local function MakeToggle(parent, yPos, label, default, onChange)
     }
 end
 
--- helper: create a dropdown row
+-- helper: dropdown row
 local function MakeDropdown(parent, yPos, label, options, default, onChange)
     local row = Instance.new('Frame')
     row.Size = UDim2.new(1, -20, 0, 28)
@@ -487,7 +376,6 @@ local function MakeDropdown(parent, yPos, label, options, default, onChange)
     lbl.Parent = row
 
     local currentIndex = table.find(options, default) or 1
-
     local btn = Instance.new('TextButton')
     btn.Size = UDim2.fromOffset(110, 22)
     btn.Position = UDim2.new(1, -110, 0.5, -11)
@@ -500,9 +388,7 @@ local function MakeDropdown(parent, yPos, label, options, default, onChange)
     btn.BorderSizePixel = 0
     btn.Parent = row
 
-    local btnCorner = Instance.new('UICorner')
-    btnCorner.CornerRadius = UDim.new(0, 6)
-    btnCorner.Parent = btn
+    Instance.new('UICorner', btn).CornerRadius = UDim.new(0, 6)
 
     btn.MouseButton1Click:Connect(function()
         currentIndex = (currentIndex % #options) + 1
@@ -510,29 +396,41 @@ local function MakeDropdown(parent, yPos, label, options, default, onChange)
         btn.Text = val .. '  ▼'
         onChange(val)
     end)
+
+    return btn
 end
 
+-- status label (shows remote status)
+local StatusLabel = Instance.new('TextLabel')
+StatusLabel.Size = UDim2.new(1, 0, 0, 20)
+StatusLabel.Position = UDim2.new(0, 0, 1, -22)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = 'Keypress mode ready | RightShift to hide'
+StatusLabel.TextColor3 = Color3.fromRGB(100, 100, 108)
+StatusLabel.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
+StatusLabel.TextSize = 10
+StatusLabel.Parent = Panel
+
 -- Spam toggle
-local spamToggle = MakeToggle(Panel, 42, 'Spam Parry', false, function(v)
+MakeToggle(Panel, 42, 'Spam Parry', false, function(v)
     SpamEnabled = v
-    if v then
-        StartSpam()
-    else
-        StopSpam()
-    end
+    if v then StartSpam() else StopSpam() end
 end)
 
--- Mode: Keypress vs Remote
-MakeDropdown(Panel, 76, 'Mode', {'Remote', 'Keypress'}, 'Remote', function(v)
+-- Mode dropdown
+local modeBtn = MakeDropdown(Panel, 76, 'Mode', {'Keypress', 'Remote'}, 'Keypress', function(v)
     KeypressMode = (v == 'Keypress')
-    -- restart spam if running so mode change takes effect
-    if SpamEnabled then
-        StopSpam()
-        StartSpam()
+    if not KeypressMode and not RemoteReady then
+        StatusLabel.Text = '⚠ Remote not available — using keypress'
+        StatusLabel.TextColor3 = Color3.fromRGB(200, 150, 50)
+    else
+        StatusLabel.Text = v .. ' mode | RightShift to hide'
+        StatusLabel.TextColor3 = Color3.fromRGB(100, 100, 108)
     end
+    RestartSpamIfRunning()
 end)
 
--- Parry direction type
+-- Direction dropdown (only matters for Remote mode)
 MakeDropdown(Panel, 110, 'Direction', {
     'Camera', 'Random', 'Backwards', 'Straight',
     'High', 'Left', 'Right', 'RandomTarget'
@@ -540,7 +438,7 @@ MakeDropdown(Panel, 110, 'Direction', {
     Selected_Parry_Type = v
 end)
 
--- First parry type
+-- First parry type dropdown
 MakeDropdown(Panel, 144, 'First Parry', {'F_Key', 'Left_Click', 'Navigation'}, 'F_Key', function(v)
     firstParryType = v
 end)
@@ -551,18 +449,7 @@ MakeToggle(Panel, 178, 'Animation Fix', false, function(v)
     UpdateAnimFix()
 end)
 
--- status line
-local Status = Instance.new('TextLabel')
-Status.Size = UDim2.new(1, 0, 0, 20)
-Status.Position = UDim2.new(0, 0, 1, -22)
-Status.BackgroundTransparency = 1
-Status.Text = 'RightShift to toggle UI'
-Status.TextColor3 = Color3.fromRGB(100, 100, 108)
-Status.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
-Status.TextSize = 10
-Status.Parent = Panel
-
--- toggle UI visibility with RightShift
+-- toggle UI visibility
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
     if input.KeyCode == Enum.KeyCode.RightShift then
@@ -573,4 +460,112 @@ end)
 -- cleanup on re-execute
 ScreenGui.Destroying:Connect(function()
     StopSpam()
+end)
+
+warn("[MSP] UI loaded — Keypress mode ready!")
+
+-- ===================== BACKGROUND REMOTE EXTRACTION ===================== --
+-- Runs in a separate thread so the UI is already usable
+-- If it succeeds, Remote mode becomes available
+
+task.spawn(function()
+    warn("[MSP] Attempting remote extraction in background...")
+
+    -- Step 1: GC scan
+    local gcFound = false
+    local Parry_Key = nil
+
+    LPH_NO_VIRTUALIZE(function()
+        for _, Value in pairs(getgc(true)) do
+            if type(Value) == "function" and islclosure(Value) then
+                local Protos    = debug.getprotos(Value)
+                local Upvalues  = debug.getupvalues(Value)
+                local Constants = debug.getconstants(Value)
+                if Protos and Upvalues and Constants
+                   and (#Protos == 4) and (#Upvalues == 24) and (#Constants == 104) then
+                    Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
+                    Parry_Key = debug.getupvalue(Value, 17)
+                    Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
+                    Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
+                    gcFound = true
+                    break
+                end
+            end
+        end
+    end)()
+
+    if not gcFound then
+        warn("[MSP] Remote extraction failed — GC signature outdated. Keypress mode only.")
+        StatusLabel.Text = 'Keypress only (remotes outdated)'
+        StatusLabel.TextColor3 = Color3.fromRGB(200, 150, 50)
+        return
+    end
+
+    -- Step 2: obfuscated remote detection
+    local PropertyChangeOrder = {}
+    local remoteCount = 0
+
+    LPH_NO_VIRTUALIZE(function()
+        for _, Object in next, game:GetDescendants() do
+            if Object:IsA("RemoteEvent") and string.find(Object.Name, "\n") then
+                remoteCount += 1
+                Object.Changed:Once(function()
+                    table.insert(PropertyChangeOrder, Object)
+                end)
+            end
+        end
+    end)()
+
+    if remoteCount == 0 then
+        warn("[MSP] No obfuscated remotes found. Keypress mode only.")
+        StatusLabel.Text = 'Keypress only (no remotes found)'
+        StatusLabel.TextColor3 = Color3.fromRGB(200, 150, 50)
+        return
+    end
+
+    local waitStart = tick()
+    repeat task.wait() until #PropertyChangeOrder == 3 or (tick() - waitStart > 15)
+
+    if #PropertyChangeOrder < 3 then
+        warn("[MSP] Remote timeout (" .. #PropertyChangeOrder .. "/3). Keypress mode only.")
+        StatusLabel.Text = 'Keypress only (remote timeout)'
+        StatusLabel.TextColor3 = Color3.fromRGB(200, 150, 50)
+        return
+    end
+
+    ShouldPlayerJump    = PropertyChangeOrder[1]
+    MainRemote          = PropertyChangeOrder[2]
+    GetOpponentPosition = PropertyChangeOrder[3]
+
+    -- Step 3: __namecall hook
+    local __namecall
+    __namecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local Args   = {...}
+        local Method = getnamecallmethod()
+        if not checkcaller() and (Method == "FireServer") and string.find(self.Name, "\n") then
+            if Args[2] then
+                PrivateKey = Args[2]
+            end
+        end
+        return __namecall(self, ...)
+    end)
+
+    -- Step 4: Parry_Key
+    pcall(function()
+        for _, Value in pairs(getconnections(Player.PlayerGui.Hotbar.Block.Activated)) do
+            if Value and Value.Function and not iscclosure(Value.Function) then
+                for _, Value2 in pairs(getupvalues(Value.Function)) do
+                    if type(Value2) == "function" then
+                        Parry_Key = getupvalue(getupvalue(Value2, 2), 17)
+                        break
+                    end
+                end
+            end
+        end
+    end)
+
+    RemoteReady = true
+    warn("[MSP] Remote extraction SUCCESS — both modes available!")
+    StatusLabel.Text = 'Both modes ready | RightShift to hide'
+    StatusLabel.TextColor3 = Color3.fromRGB(80, 180, 80)
 end)
