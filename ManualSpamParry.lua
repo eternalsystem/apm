@@ -24,45 +24,67 @@ local bindListening = false
 -- ===================== PARRY ===================== --
 
 local blockRef = nil
+local activatedSignal = nil
 
-local function GetBlock()
-    if blockRef and blockRef.Parent then return blockRef end
+local function CacheBlock()
     local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
     if hotbar then
         blockRef = hotbar:FindFirstChild("Block")
-    end
-    return blockRef
-end
-
-local function DoParry()
-    local block = GetBlock()
-    if block then
-        firesignal(block.Activated)
+        if blockRef then
+            activatedSignal = blockRef.Activated
+        end
     end
 end
 
--- ===================== SPAM — triple event, multi-fire ===================== --
+CacheBlock()
+
+-- ===================== SPAM — max throughput ===================== --
+
+local FIRES_PER_EVENT = 10
 
 local function StartSpam()
     SpamEnabled = true
-    StopSpam = StopSpam -- forward ref
 
-    -- fire on all 3 RunService events, 3x each = ~9 fires per frame (~540/sec at 60fps)
-    spamConns[1] = RunService.PreSimulation:Connect(function()
-        DoParry() DoParry() DoParry()
-    end)
-    spamConns[2] = RunService.Heartbeat:Connect(function()
-        DoParry() DoParry() DoParry()
-    end)
-    spamConns[3] = RunService.RenderStepped:Connect(function()
-        DoParry() DoParry() DoParry()
+    if not activatedSignal then CacheBlock() end
+    local sig = activatedSignal
+
+    local function Burst()
+        if not sig then return end
+        for i = 1, FIRES_PER_EVENT do
+            firesignal(sig)
+        end
+    end
+
+    -- 3 events × 10 fires = ~30 per frame × 60fps = ~1800/sec
+    spamConns[1] = RunService.PreSimulation:Connect(Burst)
+    spamConns[2] = RunService.Heartbeat:Connect(Burst)
+    spamConns[3] = RunService.RenderStepped:Connect(Burst)
+
+    -- bonus: tight loop thread that fires between frames
+    spamConns[4] = task.spawn(function()
+        while SpamEnabled do
+            if sig then
+                firesignal(sig)
+                firesignal(sig)
+                firesignal(sig)
+                firesignal(sig)
+                firesignal(sig)
+            end
+            task.wait()
+        end
     end)
 end
 
 function StopSpam()
     SpamEnabled = false
     for i, c in pairs(spamConns) do
-        if c then c:Disconnect() end
+        if c then
+            if typeof(c) == 'RBXScriptConnection' then
+                c:Disconnect()
+            else
+                pcall(task.cancel, c)
+            end
+        end
         spamConns[i] = nil
     end
 end
