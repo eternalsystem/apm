@@ -1,7 +1,7 @@
 --[[
-    Manual Spam Parry — Keypress Mode
+    Manual Spam Parry — Signal Mode
     RightShift = toggle UI
-    Choose your hotkey to toggle spam on/off
+    Click the hotkey button then press any key/mouse button to bind it
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -15,90 +15,30 @@ local TweenService      = game:GetService('TweenService')
 
 local SpamEnabled    = false
 local SpamDelay      = 0.05
-local ToggleKey      = Enum.KeyCode.X
-local MethodName     = 'Signal'
 local spamThread     = nil
 
--- ===================== PARRY METHODS ===================== --
+-- Toggle bind: stores either a KeyCode or UserInputType
+local ToggleBind     = {Type = 'KeyCode', Value = Enum.KeyCode.X}
+local bindListening  = false  -- true while waiting for user to press a key/button
 
--- Method 1: firesignal on Block button (no input simulation at all)
-local function ParrySignal()
-    local ok, err = pcall(function()
+-- ===================== PARRY (Signal only) ===================== --
+
+local function DoParry()
+    pcall(function()
         local block = Player.PlayerGui:FindFirstChild("Hotbar")
             and Player.PlayerGui.Hotbar:FindFirstChild("Block")
-        if block then
-            if firesignal then
-                firesignal(block.Activated)
-            elseif fireclick then
-                fireclick(block)
-            end
+        if block and firesignal then
+            firesignal(block.Activated)
         end
     end)
 end
-
--- Method 2: keypress/keyrelease (executor-level, not VIM)
-local function ParryKeypress()
-    if keypress and keyrelease then
-        keypress(0x46) -- F key
-        task.defer(function()
-            keyrelease(0x46)
-        end)
-    elseif Input and Input.KeyPress then
-        Input.KeyPress(0x46)
-        task.defer(function()
-            Input.KeyRelease(0x46)
-        end)
-    else
-        -- fallback to VIM only if nothing else works
-        local ok, vim = pcall(function()
-            if cloneref then
-                return cloneref(game:GetService("VirtualInputManager"))
-            end
-            return game:GetService("VirtualInputManager")
-        end)
-        if ok and vim then
-            vim:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-            task.defer(function()
-                vim:SendKeyEvent(false, Enum.KeyCode.F, false, game)
-            end)
-        end
-    end
-end
-
--- Method 3: mouse1click on Block button
-local function ParryClick()
-    local ok = pcall(function()
-        local block = Player.PlayerGui:FindFirstChild("Hotbar")
-            and Player.PlayerGui.Hotbar:FindFirstChild("Block")
-        if block then
-            if fireclickdetector then
-                -- try click detector
-                fireclickdetector(block)
-            elseif firetouchinterest then
-                firetouchinterest(block, true)
-                task.defer(function()
-                    firetouchinterest(block, false)
-                end)
-            end
-        end
-    end)
-end
-
-local Methods = {
-    Signal   = ParrySignal,
-    Keypress = ParryKeypress,
-    Click    = ParryClick,
-}
 
 -- ===================== SPAM LOGIC ===================== --
 
 local function SpamLoop()
     while SpamEnabled do
-        local fn = Methods[MethodName] or ParrySignal
-        pcall(fn)
-        -- randomize delay slightly to look more human
-        local jitter = SpamDelay * (0.8 + math.random() * 0.4)
-        task.wait(jitter)
+        DoParry()
+        task.wait(SpamDelay * (0.8 + math.random() * 0.4))
     end
 end
 
@@ -113,6 +53,30 @@ local function StopSpam()
     spamThread = nil
 end
 
+-- ===================== BIND MATCHING ===================== --
+
+local function InputMatchesBind(input)
+    if ToggleBind.Type == 'KeyCode' then
+        return input.KeyCode == ToggleBind.Value
+    elseif ToggleBind.Type == 'UserInputType' then
+        return input.UserInputType == ToggleBind.Value
+    end
+    return false
+end
+
+local function GetBindName()
+    if ToggleBind.Type == 'KeyCode' then
+        return ToggleBind.Value.Name
+    elseif ToggleBind.Type == 'UserInputType' then
+        local name = ToggleBind.Value.Name
+        if ToggleBind.Value == Enum.UserInputType.MouseButton1 then return 'Mouse1'
+        elseif ToggleBind.Value == Enum.UserInputType.MouseButton2 then return 'Mouse2'
+        elseif ToggleBind.Value == Enum.UserInputType.MouseButton3 then return 'Mouse3'
+        else return name end
+    end
+    return '?'
+end
+
 -- ===================== UI ===================== --
 
 local oldGui = CoreGui:FindFirstChild('MSP_UI')
@@ -124,7 +88,6 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.DisplayOrder = 999
 
--- protect gui if possible
 pcall(function()
     if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end
 end)
@@ -140,8 +103,8 @@ end
 
 local Panel = Instance.new('Frame')
 Panel.Name = 'Panel'
-Panel.Size = UDim2.fromOffset(230, 210)
-Panel.Position = UDim2.new(0.5, -115, 0.5, -105)
+Panel.Size = UDim2.fromOffset(230, 160)
+Panel.Position = UDim2.new(0.5, -115, 0.5, -80)
 Panel.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 Panel.BackgroundTransparency = 0.05
 Panel.BorderSizePixel = 0
@@ -155,7 +118,7 @@ stroke.Color = Color3.fromRGB(60, 60, 70)
 stroke.Thickness = 1
 stroke.Transparency = 0.4
 
--- title bar
+-- title
 local Title = Instance.new('TextLabel')
 Title.Size = UDim2.new(1, 0, 0, 30)
 Title.BackgroundColor3 = Color3.fromRGB(120, 0, 0)
@@ -169,7 +132,7 @@ Title.BorderSizePixel = 0
 Title.Parent = Panel
 Instance.new('UICorner', Title).CornerRadius = UDim.new(0, 10)
 
--- status dot
+-- status
 local StatusDot = Instance.new('TextLabel')
 StatusDot.Size = UDim2.fromOffset(50, 16)
 StatusDot.Position = UDim2.new(1, -55, 0, 7)
@@ -192,8 +155,8 @@ local function UpdateStatus()
     end
 end
 
--- helper: dropdown
-local function MakeDropdown(yPos, label, options, default, onChange)
+-- helper: make a row with label + button
+local function MakeRow(yPos, label)
     local row = Instance.new('Frame')
     row.Size = UDim2.new(1, -20, 0, 26)
     row.Position = UDim2.new(0, 10, 0, yPos)
@@ -210,12 +173,10 @@ local function MakeDropdown(yPos, label, options, default, onChange)
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.Parent = row
 
-    local idx = table.find(options, default) or 1
     local btn = Instance.new('TextButton')
     btn.Size = UDim2.fromOffset(115, 20)
     btn.Position = UDim2.new(1, -115, 0.5, -10)
     btn.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
-    btn.Text = options[idx] .. '  ▼'
     btn.TextColor3 = Color3.fromRGB(200, 200, 205)
     btn.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
     btn.TextSize = 10
@@ -224,68 +185,109 @@ local function MakeDropdown(yPos, label, options, default, onChange)
     btn.Parent = row
     Instance.new('UICorner', btn).CornerRadius = UDim.new(0, 6)
 
-    btn.MouseButton1Click:Connect(function()
-        idx = (idx % #options) + 1
-        btn.Text = options[idx] .. '  ▼'
-        onChange(options[idx])
-    end)
+    return btn
 end
 
--- Method selector
-MakeDropdown(36, 'Method', {'Signal', 'Keypress', 'Click'}, 'Signal', function(v)
-    MethodName = v
+-- ===== Hotkey bind button =====
+local hotkeyBtn = MakeRow(36, 'Hotkey')
+hotkeyBtn.Text = '[X]'
+
+hotkeyBtn.MouseButton1Click:Connect(function()
+    bindListening = true
+    hotkeyBtn.Text = '[ ... ]'
+    TweenService:Create(hotkeyBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(120, 0, 0)}):Play()
 end)
 
--- Hotkey selector
-local keyNames = {'X', 'C', 'V', 'G', 'H', 'J', 'K', 'N', 'M'}
-local keyMap = {
-    X = Enum.KeyCode.X, C = Enum.KeyCode.C, V = Enum.KeyCode.V,
-    G = Enum.KeyCode.G, H = Enum.KeyCode.H, J = Enum.KeyCode.J,
-    K = Enum.KeyCode.K, N = Enum.KeyCode.N, M = Enum.KeyCode.M,
-}
-MakeDropdown(66, 'Hotkey', keyNames, 'X', function(v)
-    ToggleKey = keyMap[v]
-end)
+-- ===== Speed selector =====
+local speedBtn = MakeRow(66, 'Speed')
+local speeds = {'Normal (0.05s)', 'Safe (0.08s)', 'Slow (0.12s)', 'Fast (0.03s)'}
+local speedVals = {['Normal (0.05s)'] = 0.05, ['Safe (0.08s)'] = 0.08, ['Slow (0.12s)'] = 0.12, ['Fast (0.03s)'] = 0.03}
+local speedIdx = 1
+speedBtn.Text = speeds[speedIdx] .. '  ▼'
 
--- Speed selector
-local speeds = {'Fast (0.03s)', 'Normal (0.05s)', 'Safe (0.08s)', 'Slow (0.12s)'}
-local speedMap = {
-    ['Fast (0.03s)'] = 0.03,
-    ['Normal (0.05s)'] = 0.05,
-    ['Safe (0.08s)'] = 0.08,
-    ['Slow (0.12s)'] = 0.12,
-}
-MakeDropdown(96, 'Speed', speeds, 'Normal (0.05s)', function(v)
-    SpamDelay = speedMap[v]
+speedBtn.MouseButton1Click:Connect(function()
+    speedIdx = (speedIdx % #speeds) + 1
+    speedBtn.Text = speeds[speedIdx] .. '  ▼'
+    SpamDelay = speedVals[speeds[speedIdx]]
 end)
 
 -- hints
 local hint = Instance.new('TextLabel')
 hint.Size = UDim2.new(1, -10, 0, 46)
-hint.Position = UDim2.new(0, 5, 1, -52)
+hint.Position = UDim2.new(0, 5, 1, -48)
 hint.BackgroundTransparency = 1
-hint.Text = 'Press X to toggle spam on/off\nRightShift to show/hide UI\nTry Signal method first (least detected)'
+hint.Text = 'Press hotkey to toggle spam on/off\nClick [Hotkey] button to rebind\nRightShift to show/hide UI'
 hint.TextColor3 = Color3.fromRGB(80, 80, 88)
 hint.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
 hint.TextSize = 9
 hint.TextWrapped = true
 hint.Parent = Panel
 
--- ===================== INPUT ===================== --
+-- ===================== INPUT HANDLING ===================== --
+
+-- Inputs to ignore when binding (UI toggle key, generic types)
+local ignoredBinds = {
+    [Enum.KeyCode.RightShift] = true,
+    [Enum.KeyCode.Unknown] = true,
+    [Enum.UserInputType.MouseMovement] = true,
+    [Enum.UserInputType.Focus] = true,
+    [Enum.UserInputType.Touch] = true,
+}
 
 UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
+    -- === BIND LISTENING MODE ===
+    if bindListening then
+        -- accept keyboard keys
+        if input.KeyCode and input.KeyCode ~= Enum.KeyCode.Unknown and not ignoredBinds[input.KeyCode] then
+            ToggleBind = {Type = 'KeyCode', Value = input.KeyCode}
+            bindListening = false
+            hotkeyBtn.Text = '[' .. GetBindName() .. ']'
+            TweenService:Create(hotkeyBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(30, 30, 36)}):Play()
+            return
+        end
+
+        -- accept mouse buttons (MB1, MB2, MB3, MB4/X1, MB5/X2)
+        local uit = input.UserInputType
+        if uit == Enum.UserInputType.MouseButton1
+            or uit == Enum.UserInputType.MouseButton2
+            or uit == Enum.UserInputType.MouseButton3 then
+            ToggleBind = {Type = 'UserInputType', Value = uit}
+            bindListening = false
+            hotkeyBtn.Text = '[' .. GetBindName() .. ']'
+            TweenService:Create(hotkeyBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(30, 30, 36)}):Play()
+            return
+        end
+
+        return
+    end
+
+    -- === NORMAL MODE ===
+
+    -- RightShift toggles UI (always, even when processed)
     if input.KeyCode == Enum.KeyCode.RightShift then
         Panel.Visible = not Panel.Visible
         return
     end
-    if input.KeyCode == ToggleKey then
-        if SpamEnabled then
-            StopSpam()
-        else
-            StartSpam()
-        end
+
+    if processed then return end
+
+    -- check if input matches bound key/button
+    if InputMatchesBind(input) then
+        if SpamEnabled then StopSpam() else StartSpam() end
         UpdateStatus()
+    end
+end)
+
+-- Handle mouse X1 and X2 buttons (they come through as KeyCode, not UserInputType)
+-- X1 = Enum.KeyCode.Unknown sometimes, so we also listen via UserInputType
+UserInputService.InputBegan:Connect(function(input, processed)
+    if bindListening then return end
+    if processed then return end
+
+    -- some executors report X1/X2 through UserInputType
+    if ToggleBind.Type == 'UserInputType' and input.UserInputType == ToggleBind.Value then
+        -- already handled above
+        return
     end
 end)
 
