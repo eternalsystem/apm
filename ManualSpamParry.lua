@@ -1,7 +1,7 @@
 --[[
-    Manual Spam Parry — Direct Remote Mode
-    Phase 1: Press F once in-game to let the script capture remotes
-    Phase 2: Spam parry directly via remotes with configurable delay
+    Manual Spam Parry
+    Methods: DirectCall (fastest) / Signal (fallback)
+    No hookmetamethod, no VIM, no __namecall hook
     RightShift = toggle UI
 ]]
 
@@ -21,107 +21,59 @@ local BindKey        = Enum.KeyCode.X
 local BindType       = 'Key'
 local bindListening  = false
 
-local SpamDelay      = 0  -- 0 = max speed (every frame), in seconds
-local MethodName     = 'Remote'  -- 'Remote' or 'Signal'
+local SpamDelay      = 0
+local MethodName     = 'DirectCall'
 
--- ===================== REMOTE CAPTURE ===================== --
+-- ===================== PARRY SETUP ===================== --
 
-local CapturedRemotes = {}  -- list of {remote, args} captured from a real parry
-local PrivateKeys     = {}  -- track private keys per remote
-local RemoteReady     = false
-local Capturing       = true  -- start in capture mode
-
--- firesignal fallback
 local activatedSignal = nil
-local function CacheBlock()
+local handlerFn       = nil  -- the actual parry function from getconnections
+
+local function Setup()
     local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-    if hotbar then
-        local block = hotbar:FindFirstChild("Block")
-        if block then activatedSignal = block.Activated end
-    end
-end
-CacheBlock()
+    if not hotbar then return end
+    local block = hotbar:FindFirstChild("Block")
+    if not block then return end
 
--- Hook __namecall to intercept ALL remote calls the game makes
-local capturedSet     = {}  -- avoid duplicates
-local captureWindow   = false
-local captureBuffer   = {}
+    activatedSignal = block.Activated
 
-local __namecall
-__namecall = hookmetamethod(game, "__namecall", function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-
-    -- capture FireServer calls during the capture window
-    if captureWindow and not checkcaller() and method == "FireServer" and self:IsA("RemoteEvent") then
-        table.insert(captureBuffer, {
-            remote = self,
-            args = args,
-        })
-    end
-
-    return __namecall(self, ...)
-end)
-
--- When the player presses F (real parry), capture what remotes fire
-local function StartCaptureWindow()
-    captureWindow = true
-    captureBuffer = {}
-
-    -- wait a short time for all remotes from this parry to fire
-    task.delay(0.15, function()
-        captureWindow = false
-
-        if #captureBuffer > 0 then
-            CapturedRemotes = {}
-            for _, entry in ipairs(captureBuffer) do
-                table.insert(CapturedRemotes, {
-                    remote = entry.remote,
-                    argCount = #entry.args,
-                    -- store the args as template (we'll reuse structure)
-                    templateArgs = entry.args,
-                })
+    -- extract the connected handler function directly
+    if getconnections then
+        for _, conn in pairs(getconnections(block.Activated)) do
+            if conn and conn.Function and not iscclosure(conn.Function) then
+                handlerFn = conn.Function
+                break
             end
-            RemoteReady = true
-            Capturing = false
         end
-    end)
-end
-
--- Listen for the player's real F press to trigger capture
-local captureConn
-captureConn = UserInputService.InputBegan:Connect(function(input, processed)
-    if not Capturing then return end
-    if input.KeyCode == Enum.KeyCode.F then
-        StartCaptureWindow()
-    end
-end)
-
--- ===================== DIRECT REMOTE PARRY ===================== --
-
-local function DirectParry()
-    for _, entry in ipairs(CapturedRemotes) do
-        entry.remote:FireServer(unpack(entry.templateArgs))
     end
 end
 
--- ===================== SIGNAL PARRY (fallback) ===================== --
+Setup()
 
-local function SignalParry()
+-- ===================== PARRY METHODS ===================== --
+
+-- Method 1: Call the handler function directly (skips signal dispatch)
+local function ParryDirectCall()
+    if handlerFn then
+        handlerFn()
+    elseif activatedSignal then
+        firesignal(activatedSignal)
+    end
+end
+
+-- Method 2: firesignal on Block.Activated
+local function ParrySignal()
     if activatedSignal then
         firesignal(activatedSignal)
     end
 end
 
--- ===================== SPAM LOGIC ===================== --
-
 local function GetParryFn()
-    if MethodName == 'Remote' and RemoteReady then
-        return DirectParry
-    else
-        return SignalParry
-    end
+    if MethodName == 'DirectCall' then return ParryDirectCall end
+    return ParrySignal
 end
+
+-- ===================== SPAM ===================== --
 
 local function StopSpam()
     SpamEnabled = false
@@ -138,12 +90,10 @@ local function StartSpam()
     local parryFn = GetParryFn()
 
     if SpamDelay <= 0 then
-        -- max speed: every frame on all 3 events
         spamConns[1] = RunService.PreSimulation:Connect(function() pcall(parryFn) end)
         spamConns[2] = RunService.Heartbeat:Connect(function() pcall(parryFn) end)
         spamConns[3] = RunService.RenderStepped:Connect(function() pcall(parryFn) end)
     else
-        -- timed mode: single heartbeat connection with delay tracking
         local lastFire = 0
         spamConns[1] = RunService.Heartbeat:Connect(function()
             local now = tick()
@@ -155,7 +105,7 @@ local function StartSpam()
     end
 end
 
--- ===================== BIND HELPERS ===================== --
+-- ===================== BIND ===================== --
 
 local function GetBindName()
     if BindType == 'Key' then return BindKey.Name end
@@ -187,8 +137,8 @@ if not ScreenGui.Parent then ScreenGui.Parent = CoreGui end
 
 local Panel = Instance.new('Frame')
 Panel.Name = 'Panel'
-Panel.Size = UDim2.fromOffset(230, 195)
-Panel.Position = UDim2.new(0.5, -115, 0.5, -97)
+Panel.Size = UDim2.fromOffset(230, 175)
+Panel.Position = UDim2.new(0.5, -115, 0.5, -87)
 Panel.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 Panel.BackgroundTransparency = 0.05
 Panel.BorderSizePixel = 0
@@ -239,6 +189,25 @@ local function UpdateStatus()
     end
 end
 
+-- info label
+local infoLabel = Instance.new('TextLabel')
+infoLabel.Size = UDim2.new(1, -20, 0, 18)
+infoLabel.Position = UDim2.new(0, 10, 0, 30)
+infoLabel.BackgroundTransparency = 1
+infoLabel.TextSize = 9
+infoLabel.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
+infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+infoLabel.Parent = Panel
+
+if handlerFn then
+    infoLabel.Text = '✓ Handler function captured'
+    infoLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+else
+    infoLabel.Text = '⚠ Handler not found, using Signal'
+    infoLabel.TextColor3 = Color3.fromRGB(220, 180, 50)
+    MethodName = 'Signal'
+end
+
 -- helper
 local function MakeRow(yPos, label)
     local row = Instance.new('Frame')
@@ -272,29 +241,10 @@ local function MakeRow(yPos, label)
     return btn
 end
 
--- Row 1: Status / instruction
-local infoLabel = Instance.new('TextLabel')
-infoLabel.Size = UDim2.new(1, -20, 0, 22)
-infoLabel.Position = UDim2.new(0, 10, 0, 32)
-infoLabel.BackgroundTransparency = 1
-infoLabel.Text = '⚠ Press F once to capture remotes'
-infoLabel.TextColor3 = Color3.fromRGB(220, 180, 50)
-infoLabel.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Bold)
-infoLabel.TextSize = 10
-infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-infoLabel.Parent = Panel
-
--- update info when captured
-task.spawn(function()
-    while Capturing do task.wait(0.2) end
-    infoLabel.Text = '✓ Captured ' .. #CapturedRemotes .. ' remotes'
-    infoLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
-end)
-
--- Row 2: Method selector
-local methodBtn = MakeRow(58, 'Method')
-local methods = {'Remote', 'Signal'}
-local methodIdx = 1
+-- Method selector
+local methodBtn = MakeRow(52, 'Method')
+local methods = {'DirectCall', 'Signal'}
+local methodIdx = (MethodName == 'DirectCall') and 1 or 2
 methodBtn.Text = MethodName .. '  ▼'
 
 methodBtn.MouseButton1Click:Connect(function()
@@ -304,8 +254,8 @@ methodBtn.MouseButton1Click:Connect(function()
     if SpamEnabled then StartSpam() UpdateStatus() end
 end)
 
--- Row 3: Delay selector
-local delayBtn = MakeRow(87, 'Delay')
+-- Delay selector
+local delayBtn = MakeRow(81, 'Delay')
 local delays = {
     {name = 'Max (0ms)',  val = 0},
     {name = '10ms',       val = 0.01},
@@ -325,8 +275,8 @@ delayBtn.MouseButton1Click:Connect(function()
     if SpamEnabled then StartSpam() UpdateStatus() end
 end)
 
--- Row 4: Hotkey bind
-local bindBtn = MakeRow(116, 'Hotkey')
+-- Hotkey bind
+local bindBtn = MakeRow(110, 'Hotkey')
 bindBtn.Text = '[X]'
 
 bindBtn.MouseButton1Click:Connect(function()
@@ -337,8 +287,8 @@ end)
 
 -- hint
 local hint = Instance.new('TextLabel')
-hint.Size = UDim2.new(1, -10, 0, 28)
-hint.Position = UDim2.new(0, 5, 1, -28)
+hint.Size = UDim2.new(1, -10, 0, 22)
+hint.Position = UDim2.new(0, 5, 1, -24)
 hint.BackgroundTransparency = 1
 hint.Text = 'Click [Hotkey] to rebind | RightShift hides UI'
 hint.TextColor3 = Color3.fromRGB(80, 80, 88)
@@ -364,21 +314,16 @@ UserInputService.InputBegan:Connect(function(input, processed)
         if uit == Enum.UserInputType.MouseMovement or uit == Enum.UserInputType.Focus then return end
         if kc == Enum.KeyCode.RightShift then return end
 
-        if kc and kc ~= Enum.KeyCode.Unknown then
-            FinishBind('Key', kc)
-            return
-        end
+        if kc and kc ~= Enum.KeyCode.Unknown then FinishBind('Key', kc) return end
         if uit == Enum.UserInputType.MouseButton1
             or uit == Enum.UserInputType.MouseButton2
             or uit == Enum.UserInputType.MouseButton3 then
-            FinishBind('Mouse', uit)
-            return
+            FinishBind('Mouse', uit) return
         end
         if uit and uit ~= Enum.UserInputType.None
             and uit ~= Enum.UserInputType.Keyboard
             and uit ~= Enum.UserInputType.Touch then
-            FinishBind('Mouse', uit)
-            return
+            FinishBind('Mouse', uit) return
         end
         return
     end
