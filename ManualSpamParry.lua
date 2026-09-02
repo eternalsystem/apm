@@ -1,7 +1,8 @@
 --[[
-    Manual Spam Parry — Signal Mode, Max Speed
+    Manual Spam Parry — Max Speed
     RightShift = toggle UI
-    Click the hotkey button then press any key/mouse to bind
+    Click [Hotkey] then press any key/mouse to bind
+    X1/X2 mouse buttons: remap them to a keyboard key in your mouse software
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -14,38 +15,55 @@ local CoreGui           = game:GetService('CoreGui')
 local TweenService      = game:GetService('TweenService')
 
 local SpamEnabled    = false
-local spamConnection = nil
+local spamConns      = {}
 
--- Bind storage: raw KeyCode or UserInputType enum value
 local BindKey   = Enum.KeyCode.X
-local BindType  = 'Key'  -- 'Key' or 'Mouse'
+local BindType  = 'Key'
 local bindListening = false
 
 -- ===================== PARRY ===================== --
 
+local blockRef = nil
+
+local function GetBlock()
+    if blockRef and blockRef.Parent then return blockRef end
+    local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
+    if hotbar then
+        blockRef = hotbar:FindFirstChild("Block")
+    end
+    return blockRef
+end
+
 local function DoParry()
-    local block = Player.PlayerGui:FindFirstChild("Hotbar")
-        and Player.PlayerGui.Hotbar:FindFirstChild("Block")
-    if block and firesignal then
+    local block = GetBlock()
+    if block then
         firesignal(block.Activated)
     end
 end
 
--- ===================== SPAM — max speed (every frame) ===================== --
+-- ===================== SPAM — triple event, multi-fire ===================== --
 
 local function StartSpam()
     SpamEnabled = true
-    if spamConnection then spamConnection:Disconnect() end
-    spamConnection = RunService.PreSimulation:Connect(function()
-        pcall(DoParry)
+    StopSpam = StopSpam -- forward ref
+
+    -- fire on all 3 RunService events, 3x each = ~9 fires per frame (~540/sec at 60fps)
+    spamConns[1] = RunService.PreSimulation:Connect(function()
+        DoParry() DoParry() DoParry()
+    end)
+    spamConns[2] = RunService.Heartbeat:Connect(function()
+        DoParry() DoParry() DoParry()
+    end)
+    spamConns[3] = RunService.RenderStepped:Connect(function()
+        DoParry() DoParry() DoParry()
     end)
 end
 
-local function StopSpam()
+function StopSpam()
     SpamEnabled = false
-    if spamConnection then
-        spamConnection:Disconnect()
-        spamConnection = nil
+    for i, c in pairs(spamConns) do
+        if c then c:Disconnect() end
+        spamConns[i] = nil
     end
 end
 
@@ -91,8 +109,8 @@ if not ScreenGui.Parent then ScreenGui.Parent = CoreGui end
 
 local Panel = Instance.new('Frame')
 Panel.Name = 'Panel'
-Panel.Size = UDim2.fromOffset(210, 110)
-Panel.Position = UDim2.new(0.5, -105, 0.5, -55)
+Panel.Size = UDim2.fromOffset(210, 100)
+Panel.Position = UDim2.new(0.5, -105, 0.5, -50)
 Panel.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 Panel.BackgroundTransparency = 0.05
 Panel.BorderSizePixel = 0
@@ -143,10 +161,10 @@ local function UpdateStatus()
     end
 end
 
--- hotkey bind row
+-- hotkey row
 local bindRow = Instance.new('Frame')
 bindRow.Size = UDim2.new(1, -20, 0, 26)
-bindRow.Position = UDim2.new(0, 10, 0, 34)
+bindRow.Position = UDim2.new(0, 10, 0, 33)
 bindRow.BackgroundTransparency = 1
 bindRow.Parent = Panel
 
@@ -181,10 +199,10 @@ end)
 
 -- hint
 local hint = Instance.new('TextLabel')
-hint.Size = UDim2.new(1, -10, 0, 36)
-hint.Position = UDim2.new(0, 5, 1, -38)
+hint.Size = UDim2.new(1, -10, 0, 28)
+hint.Position = UDim2.new(0, 5, 1, -30)
 hint.BackgroundTransparency = 1
-hint.Text = 'Click [Hotkey] to rebind (keyboard + mouse)\nRightShift to show/hide UI'
+hint.Text = 'Click [Hotkey] to rebind | RightShift hides UI'
 hint.TextColor3 = Color3.fromRGB(80, 80, 88)
 hint.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
 hint.TextSize = 9
@@ -202,23 +220,19 @@ local function FinishBind(type, value)
 end
 
 UserInputService.InputBegan:Connect(function(input, processed)
-    -- ====== BIND MODE ======
     if bindListening then
         local kc = input.KeyCode
         local uit = input.UserInputType
 
-        -- ignore movement, focus, and RightShift
         if uit == Enum.UserInputType.MouseMovement then return end
         if uit == Enum.UserInputType.Focus then return end
         if kc == Enum.KeyCode.RightShift then return end
 
-        -- keyboard key
         if kc and kc ~= Enum.KeyCode.Unknown then
             FinishBind('Key', kc)
             return
         end
 
-        -- mouse buttons (left, right, middle)
         if uit == Enum.UserInputType.MouseButton1
             or uit == Enum.UserInputType.MouseButton2
             or uit == Enum.UserInputType.MouseButton3 then
@@ -226,20 +240,15 @@ UserInputService.InputBegan:Connect(function(input, processed)
             return
         end
 
-        -- anything else that has a non-zero UserInputType value (catches X1, X2, etc.)
         if uit and uit ~= Enum.UserInputType.None
             and uit ~= Enum.UserInputType.Keyboard
-            and uit ~= Enum.UserInputType.MouseMovement
-            and uit ~= Enum.UserInputType.Focus
             and uit ~= Enum.UserInputType.Touch then
             FinishBind('Mouse', uit)
             return
         end
-
         return
     end
 
-    -- ====== NORMAL MODE ======
     if input.KeyCode == Enum.KeyCode.RightShift then
         Panel.Visible = not Panel.Visible
         return
