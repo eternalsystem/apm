@@ -16,6 +16,7 @@ local TweenService      = game:GetService('TweenService')
 
 local SpamEnabled    = false
 local spamConns      = {}
+local spamSession    = 0  -- unique ID per spam session, threads check this to self-terminate
 
 local BindKey   = Enum.KeyCode.X
 local BindType  = 'Key'
@@ -23,67 +24,63 @@ local bindListening = false
 
 -- ===================== PARRY ===================== --
 
-local blockRef = nil
 local activatedSignal = nil
 
 local function CacheBlock()
     local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
     if hotbar then
-        blockRef = hotbar:FindFirstChild("Block")
-        if blockRef then
-            activatedSignal = blockRef.Activated
+        local block = hotbar:FindFirstChild("Block")
+        if block then
+            activatedSignal = block.Activated
         end
     end
 end
 
 CacheBlock()
 
--- ===================== SPAM — max throughput ===================== --
-
-local FIRES_PER_EVENT = 10
+-- ===================== SPAM — absolute max throughput ===================== --
 
 local function StartSpam()
+    -- kill any previous session first
+    spamSession += 1
+    local mySession = spamSession
     SpamEnabled = true
 
     if not activatedSignal then CacheBlock() end
     local sig = activatedSignal
+    if not sig then return end
 
+    -- RunService connections: 3 events × 20 fires each = 60 per frame
     local function Burst()
-        if not sig then return end
-        for i = 1, FIRES_PER_EVENT do
-            firesignal(sig)
-        end
+        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
+        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
+        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
+        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
     end
 
-    -- 3 events × 10 fires = ~30 per frame × 60fps = ~1800/sec
     spamConns[1] = RunService.PreSimulation:Connect(Burst)
     spamConns[2] = RunService.Heartbeat:Connect(Burst)
     spamConns[3] = RunService.RenderStepped:Connect(Burst)
 
-    -- bonus: tight loop thread that fires between frames
-    spamConns[4] = task.spawn(function()
-        while SpamEnabled do
-            if sig then
-                firesignal(sig)
-                firesignal(sig)
-                firesignal(sig)
-                firesignal(sig)
-                firesignal(sig)
+    -- 4 tight loop threads firing between frames, each checks session ID to stop
+    for t = 1, 4 do
+        task.spawn(function()
+            while spamSession == mySession do
+                firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
+                firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
+                task.wait()
             end
-            task.wait()
-        end
-    end)
+        end)
+    end
 end
 
 function StopSpam()
     SpamEnabled = false
+    spamSession += 1  -- all threads see the session changed and exit
+
     for i, c in pairs(spamConns) do
-        if c then
-            if typeof(c) == 'RBXScriptConnection' then
-                c:Disconnect()
-            else
-                pcall(task.cancel, c)
-            end
+        if typeof(c) == 'RBXScriptConnection' then
+            c:Disconnect()
         end
         spamConns[i] = nil
     end
