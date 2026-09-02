@@ -1,8 +1,7 @@
 --[[
-    Manual Spam Parry — Max Speed
+    Manual Spam Parry — Signal Mode
     RightShift = toggle UI
-    Click [Hotkey] then press any key/mouse to bind
-    X1/X2 mouse buttons: remap them to a keyboard key in your mouse software
+    Click [Hotkey] to rebind | Press hotkey to toggle spam
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -16,11 +15,12 @@ local TweenService      = game:GetService('TweenService')
 
 local SpamEnabled    = false
 local spamConns      = {}
-local spamSession    = 0  -- unique ID per spam session, threads check this to self-terminate
 
-local BindKey   = Enum.KeyCode.X
-local BindType  = 'Key'
-local bindListening = false
+local BindKey        = Enum.KeyCode.X
+local BindType       = 'Key'
+local bindListening  = false
+
+local SpeedMode      = '3x'  -- default
 
 -- ===================== PARRY ===================== --
 
@@ -38,51 +38,66 @@ end
 
 CacheBlock()
 
--- ===================== SPAM — absolute max throughput ===================== --
+-- ===================== SPAM ===================== --
 
-local function StartSpam()
-    -- kill any previous session first
-    spamSession += 1
-    local mySession = spamSession
-    SpamEnabled = true
-
-    if not activatedSignal then CacheBlock() end
-    local sig = activatedSignal
-    if not sig then return end
-
-    -- RunService connections: 3 events × 20 fires each = 60 per frame
-    local function Burst()
-        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
-        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
-        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
-        firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
-    end
-
-    spamConns[1] = RunService.PreSimulation:Connect(Burst)
-    spamConns[2] = RunService.Heartbeat:Connect(Burst)
-    spamConns[3] = RunService.RenderStepped:Connect(Burst)
-
-    -- 4 tight loop threads firing between frames, each checks session ID to stop
-    for t = 1, 4 do
-        task.spawn(function()
-            while spamSession == mySession do
-                firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
-                firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig) firesignal(sig)
-                task.wait()
-            end
-        end)
+local function MakeBurst(n)
+    -- return a function that fires exactly n times
+    return function()
+        local sig = activatedSignal
+        if not sig then return end
+        for i = 1, n do
+            firesignal(sig)
+        end
     end
 end
 
-function StopSpam()
+local function StopSpam()
     SpamEnabled = false
-    spamSession += 1  -- all threads see the session changed and exit
-
     for i, c in pairs(spamConns) do
-        if typeof(c) == 'RBXScriptConnection' then
-            c:Disconnect()
-        end
+        c:Disconnect()
         spamConns[i] = nil
+    end
+end
+
+local function StartSpam()
+    StopSpam() -- clean any leftover connections first
+    if not activatedSignal then CacheBlock() end
+    if not activatedSignal then return end
+
+    SpamEnabled = true
+
+    if SpeedMode == '1x' then
+        -- 1 connection, 1 fire per frame (~60/sec)
+        local burst = MakeBurst(1)
+        spamConns[1] = RunService.Heartbeat:Connect(burst)
+
+    elseif SpeedMode == '3x' then
+        -- 3 connections, 1 fire each (~180/sec)
+        local burst = MakeBurst(1)
+        spamConns[1] = RunService.PreSimulation:Connect(burst)
+        spamConns[2] = RunService.Heartbeat:Connect(burst)
+        spamConns[3] = RunService.RenderStepped:Connect(burst)
+
+    elseif SpeedMode == '5x' then
+        -- 3 connections, 5 fires each (~900/sec)
+        local burst = MakeBurst(5)
+        spamConns[1] = RunService.PreSimulation:Connect(burst)
+        spamConns[2] = RunService.Heartbeat:Connect(burst)
+        spamConns[3] = RunService.RenderStepped:Connect(burst)
+
+    elseif SpeedMode == '10x' then
+        -- 3 connections, 10 fires each (~1800/sec)
+        local burst = MakeBurst(10)
+        spamConns[1] = RunService.PreSimulation:Connect(burst)
+        spamConns[2] = RunService.Heartbeat:Connect(burst)
+        spamConns[3] = RunService.RenderStepped:Connect(burst)
+
+    elseif SpeedMode == '20x' then
+        -- 3 connections, 20 fires each (~3600/sec)
+        local burst = MakeBurst(20)
+        spamConns[1] = RunService.PreSimulation:Connect(burst)
+        spamConns[2] = RunService.Heartbeat:Connect(burst)
+        spamConns[3] = RunService.RenderStepped:Connect(burst)
     end
 end
 
@@ -128,8 +143,8 @@ if not ScreenGui.Parent then ScreenGui.Parent = CoreGui end
 
 local Panel = Instance.new('Frame')
 Panel.Name = 'Panel'
-Panel.Size = UDim2.fromOffset(210, 100)
-Panel.Position = UDim2.new(0.5, -105, 0.5, -50)
+Panel.Size = UDim2.fromOffset(210, 130)
+Panel.Position = UDim2.new(0.5, -105, 0.5, -65)
 Panel.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 Panel.BackgroundTransparency = 0.05
 Panel.BorderSizePixel = 0
@@ -180,35 +195,42 @@ local function UpdateStatus()
     end
 end
 
--- hotkey row
-local bindRow = Instance.new('Frame')
-bindRow.Size = UDim2.new(1, -20, 0, 26)
-bindRow.Position = UDim2.new(0, 10, 0, 33)
-bindRow.BackgroundTransparency = 1
-bindRow.Parent = Panel
+-- helper: make a row
+local function MakeRow(yPos, label)
+    local row = Instance.new('Frame')
+    row.Size = UDim2.new(1, -20, 0, 26)
+    row.Position = UDim2.new(0, 10, 0, yPos)
+    row.BackgroundTransparency = 1
+    row.Parent = Panel
 
-local bindLbl = Instance.new('TextLabel')
-bindLbl.Size = UDim2.new(0.4, 0, 1, 0)
-bindLbl.BackgroundTransparency = 1
-bindLbl.Text = 'Hotkey'
-bindLbl.TextColor3 = Color3.fromRGB(200, 200, 205)
-bindLbl.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
-bindLbl.TextSize = 12
-bindLbl.TextXAlignment = Enum.TextXAlignment.Left
-bindLbl.Parent = bindRow
+    local lbl = Instance.new('TextLabel')
+    lbl.Size = UDim2.new(0.4, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = Color3.fromRGB(200, 200, 205)
+    lbl.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
 
-local bindBtn = Instance.new('TextButton')
-bindBtn.Size = UDim2.fromOffset(100, 20)
-bindBtn.Position = UDim2.new(1, -100, 0.5, -10)
-bindBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+    local btn = Instance.new('TextButton')
+    btn.Size = UDim2.fromOffset(100, 20)
+    btn.Position = UDim2.new(1, -100, 0.5, -10)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+    btn.TextColor3 = Color3.fromRGB(200, 200, 205)
+    btn.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
+    btn.TextSize = 11
+    btn.AutoButtonColor = false
+    btn.BorderSizePixel = 0
+    btn.Parent = row
+    Instance.new('UICorner', btn).CornerRadius = UDim.new(0, 6)
+
+    return btn
+end
+
+-- Hotkey bind
+local bindBtn = MakeRow(33, 'Hotkey')
 bindBtn.Text = '[X]'
-bindBtn.TextColor3 = Color3.fromRGB(200, 200, 205)
-bindBtn.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
-bindBtn.TextSize = 11
-bindBtn.AutoButtonColor = false
-bindBtn.BorderSizePixel = 0
-bindBtn.Parent = bindRow
-Instance.new('UICorner', bindBtn).CornerRadius = UDim.new(0, 6)
 
 bindBtn.MouseButton1Click:Connect(function()
     bindListening = true
@@ -216,10 +238,27 @@ bindBtn.MouseButton1Click:Connect(function()
     TweenService:Create(bindBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(120, 0, 0)}):Play()
 end)
 
+-- Speed mode selector
+local speedBtn = MakeRow(62, 'Speed')
+local speedModes = {'1x', '3x', '5x', '10x', '20x'}
+local speedIdx = 2  -- default 3x
+speedBtn.Text = SpeedMode .. '  ▼'
+
+speedBtn.MouseButton1Click:Connect(function()
+    speedIdx = (speedIdx % #speedModes) + 1
+    SpeedMode = speedModes[speedIdx]
+    speedBtn.Text = SpeedMode .. '  ▼'
+    -- restart if running
+    if SpamEnabled then
+        StartSpam()
+        UpdateStatus()
+    end
+end)
+
 -- hint
 local hint = Instance.new('TextLabel')
 hint.Size = UDim2.new(1, -10, 0, 28)
-hint.Position = UDim2.new(0, 5, 1, -30)
+hint.Position = UDim2.new(0, 5, 1, -28)
 hint.BackgroundTransparency = 1
 hint.Text = 'Click [Hotkey] to rebind | RightShift hides UI'
 hint.TextColor3 = Color3.fromRGB(80, 80, 88)
