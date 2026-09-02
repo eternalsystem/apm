@@ -1,7 +1,8 @@
 --[[
-    Manual Spam Parry — Signal Mode
+    Manual Spam Parry — Direct Remote Mode
+    Phase 1: Press F once in-game to let the script capture remotes
+    Phase 2: Spam parry directly via remotes with configurable delay
     RightShift = toggle UI
-    Click [Hotkey] to rebind | Press hotkey to toggle spam
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -20,34 +21,105 @@ local BindKey        = Enum.KeyCode.X
 local BindType       = 'Key'
 local bindListening  = false
 
-local SpeedMode      = '3x'  -- default
+local SpamDelay      = 0  -- 0 = max speed (every frame), in seconds
+local MethodName     = 'Remote'  -- 'Remote' or 'Signal'
 
--- ===================== PARRY ===================== --
+-- ===================== REMOTE CAPTURE ===================== --
 
+local CapturedRemotes = {}  -- list of {remote, args} captured from a real parry
+local PrivateKeys     = {}  -- track private keys per remote
+local RemoteReady     = false
+local Capturing       = true  -- start in capture mode
+
+-- firesignal fallback
 local activatedSignal = nil
-
 local function CacheBlock()
     local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
     if hotbar then
         local block = hotbar:FindFirstChild("Block")
-        if block then
-            activatedSignal = block.Activated
+        if block then activatedSignal = block.Activated end
+    end
+end
+CacheBlock()
+
+-- Hook __namecall to intercept ALL remote calls the game makes
+local capturedSet     = {}  -- avoid duplicates
+local captureWindow   = false
+local captureBuffer   = {}
+
+local __namecall
+__namecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+
+    -- capture FireServer calls during the capture window
+    if captureWindow and not checkcaller() and method == "FireServer" and self:IsA("RemoteEvent") then
+        table.insert(captureBuffer, {
+            remote = self,
+            args = args,
+        })
+    end
+
+    return __namecall(self, ...)
+end)
+
+-- When the player presses F (real parry), capture what remotes fire
+local function StartCaptureWindow()
+    captureWindow = true
+    captureBuffer = {}
+
+    -- wait a short time for all remotes from this parry to fire
+    task.delay(0.15, function()
+        captureWindow = false
+
+        if #captureBuffer > 0 then
+            CapturedRemotes = {}
+            for _, entry in ipairs(captureBuffer) do
+                table.insert(CapturedRemotes, {
+                    remote = entry.remote,
+                    argCount = #entry.args,
+                    -- store the args as template (we'll reuse structure)
+                    templateArgs = entry.args,
+                })
+            end
+            RemoteReady = true
+            Capturing = false
         end
+    end)
+end
+
+-- Listen for the player's real F press to trigger capture
+local captureConn
+captureConn = UserInputService.InputBegan:Connect(function(input, processed)
+    if not Capturing then return end
+    if input.KeyCode == Enum.KeyCode.F then
+        StartCaptureWindow()
+    end
+end)
+
+-- ===================== DIRECT REMOTE PARRY ===================== --
+
+local function DirectParry()
+    for _, entry in ipairs(CapturedRemotes) do
+        entry.remote:FireServer(unpack(entry.templateArgs))
     end
 end
 
-CacheBlock()
+-- ===================== SIGNAL PARRY (fallback) ===================== --
 
--- ===================== SPAM ===================== --
+local function SignalParry()
+    if activatedSignal then
+        firesignal(activatedSignal)
+    end
+end
 
-local function MakeBurst(n)
-    -- return a function that fires exactly n times
-    return function()
-        local sig = activatedSignal
-        if not sig then return end
-        for i = 1, n do
-            firesignal(sig)
-        end
+-- ===================== SPAM LOGIC ===================== --
+
+local function GetParryFn()
+    if MethodName == 'Remote' and RemoteReady then
+        return DirectParry
+    else
+        return SignalParry
     end
 end
 
@@ -60,66 +132,42 @@ local function StopSpam()
 end
 
 local function StartSpam()
-    StopSpam() -- clean any leftover connections first
-    if not activatedSignal then CacheBlock() end
-    if not activatedSignal then return end
-
+    StopSpam()
     SpamEnabled = true
 
-    if SpeedMode == '1x' then
-        -- 1 connection, 1 fire per frame (~60/sec)
-        local burst = MakeBurst(1)
-        spamConns[1] = RunService.Heartbeat:Connect(burst)
+    local parryFn = GetParryFn()
 
-    elseif SpeedMode == '3x' then
-        -- 3 connections, 1 fire each (~180/sec)
-        local burst = MakeBurst(1)
-        spamConns[1] = RunService.PreSimulation:Connect(burst)
-        spamConns[2] = RunService.Heartbeat:Connect(burst)
-        spamConns[3] = RunService.RenderStepped:Connect(burst)
-
-    elseif SpeedMode == '5x' then
-        -- 3 connections, 5 fires each (~900/sec)
-        local burst = MakeBurst(5)
-        spamConns[1] = RunService.PreSimulation:Connect(burst)
-        spamConns[2] = RunService.Heartbeat:Connect(burst)
-        spamConns[3] = RunService.RenderStepped:Connect(burst)
-
-    elseif SpeedMode == '10x' then
-        -- 3 connections, 10 fires each (~1800/sec)
-        local burst = MakeBurst(10)
-        spamConns[1] = RunService.PreSimulation:Connect(burst)
-        spamConns[2] = RunService.Heartbeat:Connect(burst)
-        spamConns[3] = RunService.RenderStepped:Connect(burst)
-
-    elseif SpeedMode == '20x' then
-        -- 3 connections, 20 fires each (~3600/sec)
-        local burst = MakeBurst(20)
-        spamConns[1] = RunService.PreSimulation:Connect(burst)
-        spamConns[2] = RunService.Heartbeat:Connect(burst)
-        spamConns[3] = RunService.RenderStepped:Connect(burst)
+    if SpamDelay <= 0 then
+        -- max speed: every frame on all 3 events
+        spamConns[1] = RunService.PreSimulation:Connect(function() pcall(parryFn) end)
+        spamConns[2] = RunService.Heartbeat:Connect(function() pcall(parryFn) end)
+        spamConns[3] = RunService.RenderStepped:Connect(function() pcall(parryFn) end)
+    else
+        -- timed mode: single heartbeat connection with delay tracking
+        local lastFire = 0
+        spamConns[1] = RunService.Heartbeat:Connect(function()
+            local now = tick()
+            if now - lastFire >= SpamDelay then
+                lastFire = now
+                pcall(parryFn)
+            end
+        end)
     end
 end
 
 -- ===================== BIND HELPERS ===================== --
 
 local function GetBindName()
-    if BindType == 'Key' then
-        return BindKey.Name
-    else
-        if BindKey == Enum.UserInputType.MouseButton1 then return 'Mouse1' end
-        if BindKey == Enum.UserInputType.MouseButton2 then return 'Mouse2' end
-        if BindKey == Enum.UserInputType.MouseButton3 then return 'Mouse3' end
-        return tostring(BindKey)
-    end
+    if BindType == 'Key' then return BindKey.Name end
+    if BindKey == Enum.UserInputType.MouseButton1 then return 'Mouse1' end
+    if BindKey == Enum.UserInputType.MouseButton2 then return 'Mouse2' end
+    if BindKey == Enum.UserInputType.MouseButton3 then return 'Mouse3' end
+    return tostring(BindKey)
 end
 
 local function InputMatchesBind(input)
-    if BindType == 'Key' then
-        return input.KeyCode == BindKey
-    else
-        return input.UserInputType == BindKey
-    end
+    if BindType == 'Key' then return input.KeyCode == BindKey end
+    return input.UserInputType == BindKey
 end
 
 -- ===================== UI ===================== --
@@ -133,18 +181,14 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.DisplayOrder = 999
 
-pcall(function()
-    if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end
-end)
-pcall(function()
-    if gethui then ScreenGui.Parent = gethui() return end
-end)
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end end)
+pcall(function() if gethui then ScreenGui.Parent = gethui() return end end)
 if not ScreenGui.Parent then ScreenGui.Parent = CoreGui end
 
 local Panel = Instance.new('Frame')
 Panel.Name = 'Panel'
-Panel.Size = UDim2.fromOffset(210, 130)
-Panel.Position = UDim2.new(0.5, -105, 0.5, -65)
+Panel.Size = UDim2.fromOffset(230, 195)
+Panel.Position = UDim2.new(0.5, -115, 0.5, -97)
 Panel.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 Panel.BackgroundTransparency = 0.05
 Panel.BorderSizePixel = 0
@@ -195,7 +239,7 @@ local function UpdateStatus()
     end
 end
 
--- helper: make a row
+-- helper
 local function MakeRow(yPos, label)
     local row = Instance.new('Frame')
     row.Size = UDim2.new(1, -20, 0, 26)
@@ -214,12 +258,12 @@ local function MakeRow(yPos, label)
     lbl.Parent = row
 
     local btn = Instance.new('TextButton')
-    btn.Size = UDim2.fromOffset(100, 20)
-    btn.Position = UDim2.new(1, -100, 0.5, -10)
+    btn.Size = UDim2.fromOffset(115, 20)
+    btn.Position = UDim2.new(1, -115, 0.5, -10)
     btn.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
     btn.TextColor3 = Color3.fromRGB(200, 200, 205)
     btn.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
-    btn.TextSize = 11
+    btn.TextSize = 10
     btn.AutoButtonColor = false
     btn.BorderSizePixel = 0
     btn.Parent = row
@@ -228,31 +272,67 @@ local function MakeRow(yPos, label)
     return btn
 end
 
--- Hotkey bind
-local bindBtn = MakeRow(33, 'Hotkey')
+-- Row 1: Status / instruction
+local infoLabel = Instance.new('TextLabel')
+infoLabel.Size = UDim2.new(1, -20, 0, 22)
+infoLabel.Position = UDim2.new(0, 10, 0, 32)
+infoLabel.BackgroundTransparency = 1
+infoLabel.Text = '⚠ Press F once to capture remotes'
+infoLabel.TextColor3 = Color3.fromRGB(220, 180, 50)
+infoLabel.FontFace = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Bold)
+infoLabel.TextSize = 10
+infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+infoLabel.Parent = Panel
+
+-- update info when captured
+task.spawn(function()
+    while Capturing do task.wait(0.2) end
+    infoLabel.Text = '✓ Captured ' .. #CapturedRemotes .. ' remotes'
+    infoLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+end)
+
+-- Row 2: Method selector
+local methodBtn = MakeRow(58, 'Method')
+local methods = {'Remote', 'Signal'}
+local methodIdx = 1
+methodBtn.Text = MethodName .. '  ▼'
+
+methodBtn.MouseButton1Click:Connect(function()
+    methodIdx = (methodIdx % #methods) + 1
+    MethodName = methods[methodIdx]
+    methodBtn.Text = MethodName .. '  ▼'
+    if SpamEnabled then StartSpam() UpdateStatus() end
+end)
+
+-- Row 3: Delay selector
+local delayBtn = MakeRow(87, 'Delay')
+local delays = {
+    {name = 'Max (0ms)',  val = 0},
+    {name = '10ms',       val = 0.01},
+    {name = '20ms',       val = 0.02},
+    {name = '50ms',       val = 0.05},
+    {name = '100ms',      val = 0.1},
+    {name = '200ms',      val = 0.2},
+    {name = '500ms',      val = 0.5},
+}
+local delayIdx = 1
+delayBtn.Text = delays[delayIdx].name .. '  ▼'
+
+delayBtn.MouseButton1Click:Connect(function()
+    delayIdx = (delayIdx % #delays) + 1
+    SpamDelay = delays[delayIdx].val
+    delayBtn.Text = delays[delayIdx].name .. '  ▼'
+    if SpamEnabled then StartSpam() UpdateStatus() end
+end)
+
+-- Row 4: Hotkey bind
+local bindBtn = MakeRow(116, 'Hotkey')
 bindBtn.Text = '[X]'
 
 bindBtn.MouseButton1Click:Connect(function()
     bindListening = true
     bindBtn.Text = '[ ... ]'
     TweenService:Create(bindBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(120, 0, 0)}):Play()
-end)
-
--- Speed mode selector
-local speedBtn = MakeRow(62, 'Speed')
-local speedModes = {'1x', '3x', '5x', '10x', '20x'}
-local speedIdx = 2  -- default 3x
-speedBtn.Text = SpeedMode .. '  ▼'
-
-speedBtn.MouseButton1Click:Connect(function()
-    speedIdx = (speedIdx % #speedModes) + 1
-    SpeedMode = speedModes[speedIdx]
-    speedBtn.Text = SpeedMode .. '  ▼'
-    -- restart if running
-    if SpamEnabled then
-        StartSpam()
-        UpdateStatus()
-    end
 end)
 
 -- hint
@@ -281,23 +361,19 @@ UserInputService.InputBegan:Connect(function(input, processed)
     if bindListening then
         local kc = input.KeyCode
         local uit = input.UserInputType
-
-        if uit == Enum.UserInputType.MouseMovement then return end
-        if uit == Enum.UserInputType.Focus then return end
+        if uit == Enum.UserInputType.MouseMovement or uit == Enum.UserInputType.Focus then return end
         if kc == Enum.KeyCode.RightShift then return end
 
         if kc and kc ~= Enum.KeyCode.Unknown then
             FinishBind('Key', kc)
             return
         end
-
         if uit == Enum.UserInputType.MouseButton1
             or uit == Enum.UserInputType.MouseButton2
             or uit == Enum.UserInputType.MouseButton3 then
             FinishBind('Mouse', uit)
             return
         end
-
         if uit and uit ~= Enum.UserInputType.None
             and uit ~= Enum.UserInputType.Keyboard
             and uit ~= Enum.UserInputType.Touch then
