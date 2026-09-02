@@ -1,8 +1,4 @@
---[[
-    Manual Spam Parry — Stripped from Allusive & UwU AP
-    Features: Manual Spam Parry, Keypress/Remote mode toggle, Animation Fix
-    Toggle UI with RightShift
-]]
+
 
 repeat task.wait() until game:IsLoaded()
 
