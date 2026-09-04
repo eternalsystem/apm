@@ -1,540 +1,471 @@
 --[[
-    PrivateKey Finder — Blade Ball
-    Explore passivement les upvalues + GC pour trouver le PrivateKey
-    Aucun hook, aucune modification = pas de kick
+    PrivateKey Test — Blade Ball
+    Extrait les remotes + clé hex 32 du SwordsController
+    Teste différentes combinaisons de FireServer
+    UN SEUL fire par combo pour éviter les kicks
 ]]
 
 repeat task.wait() until game:IsLoaded()
 
 local Players = game:GetService("Players")
 local Player = Players.LocalPlayer
-local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local StarterGui = game:GetService("StarterGui")
 
--- ===================== OUTPUT ===================== --
+-- ===================== GUI ===================== --
 
-local function log(...)
-    local parts = {}
-    for i = 1, select("#", ...) do
-        parts[i] = tostring(select(i, ...))
-    end
-    -- Print to console (F9)
-    print("[PKFinder]", table.concat(parts, " "))
+local oldGui = CoreGui:FindFirstChild("PKT_Output")
+if oldGui then oldGui:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PKT_Output"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 1001
+pcall(function() if gethui then ScreenGui.Parent = gethui() return end end)
+if not ScreenGui.Parent then
+    pcall(function() if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end end)
+    ScreenGui.Parent = CoreGui
 end
 
-local function logSection(title)
-    log("========================================")
-    log("  " .. title)
-    log("========================================")
+local BG = Instance.new("Frame")
+BG.Size = UDim2.new(0, 520, 0, 400)
+BG.Position = UDim2.new(0, 10, 0, 10)
+BG.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+BG.BackgroundTransparency = 0.05
+BG.BorderSizePixel = 0
+BG.Active = true
+BG.Draggable = true
+BG.Parent = ScreenGui
+Instance.new("UICorner", BG).CornerRadius = UDim.new(0, 8)
+
+local TitleBar = Instance.new("TextLabel")
+TitleBar.Size = UDim2.new(1, 0, 0, 28)
+TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+TitleBar.Text = "  ⚡ PrivateKey Test"
+TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleBar.TextSize = 13
+TitleBar.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
+TitleBar.TextXAlignment = Enum.TextXAlignment.Left
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = BG
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.fromOffset(28, 28)
+CloseBtn.Position = UDim2.new(1, -28, 0, 0)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(150, 150, 150)
+CloseBtn.TextSize = 14
+CloseBtn.Parent = TitleBar
+CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
+
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1, -16, 1, -36)
+Scroll.Position = UDim2.fromOffset(8, 32)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 4
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.Parent = BG
+
+local Layout = Instance.new("UIListLayout")
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Padding = UDim.new(0, 1)
+Layout.Parent = Scroll
+
+local lineOrder = 0
+local WHITE = Color3.fromRGB(255, 255, 255)
+local GREEN = Color3.fromRGB(100, 255, 120)
+local YELLOW = Color3.fromRGB(255, 220, 80)
+local RED = Color3.fromRGB(255, 90, 90)
+local CYAN = Color3.fromRGB(100, 200, 255)
+local DIM = Color3.fromRGB(120, 120, 120)
+
+local function addLine(text, color)
+    lineOrder = lineOrder + 1
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 0)
+    lbl.AutomaticSize = Enum.AutomaticSize.Y
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = color or DIM
+    lbl.TextSize = 11
+    lbl.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json", Enum.FontWeight.Regular)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextWrapped = true
+    lbl.LayoutOrder = lineOrder
+    lbl.Parent = Scroll
+    return lbl
 end
 
--- ===================== DEEP UPVALUE WALKER ===================== --
-
--- Walk all upvalues recursively, tracking visited objects to avoid loops
-local function DeepWalkUpvalues(fn, depth, visited, results, path)
-    if not fn or type(fn) ~= "function" then return end
-    if depth > 12 then return end -- max depth
-    visited = visited or {}
-    results = results or {}
-    path = path or "root"
-
-    if visited[fn] then return end
-    visited[fn] = true
-
-    local ok, info = pcall(getinfo, fn)
-    local fnName = (ok and info and info.name) or "?"
-
-    -- Get upvalue count
-    local uvCount = 0
+local function section(t) addLine(""); addLine("═══ " .. t .. " ═══", YELLOW) end
+local function notify(t)
     pcall(function()
-        for i = 1, 200 do
-            local name, val = getupvalue(fn, i)
-            if name == nil then break end -- debug.getupvalue convention: nil name = past end
-            uvCount = i
-        end
+        StarterGui:SetCore("SendNotification", {Title = "PKTest", Text = t, Duration = 5})
     end)
+end
 
-    -- Scan each upvalue
-    for i = 1, uvCount do
-        local ok2, name, val = pcall(function()
-            local n, v = getupvalue(fn, i)
-            return n, v
-        end)
-        if not ok2 then break end
+local _getconnections = getconnections
+local _getupvalues = typeof(getupvalues) == "function" and getupvalues or (debug and debug.getupvalues)
+local _getupvalue = typeof(getupvalue) == "function" and getupvalue or (debug and debug.getupvalue)
+local _getinfo = typeof(getinfo) == "function" and getinfo or (debug and debug.getinfo)
 
-        local uvPath = path .. " → UV[" .. i .. "](" .. tostring(name) .. ")"
+-- ===================== EXTRACT REMOTES + KEY ===================== --
 
-        if val == nil then
-            -- skip nil
-        elseif type(val) == "string" then
-            -- Strings that look like keys: long hex, base64, or UUID-like
-            if #val >= 16 then
-                table.insert(results, {
-                    path = uvPath,
-                    type = "string",
-                    length = #val,
-                    value = val,
-                    preview = #val > 80 and (val:sub(1, 80) .. "...") or val
-                })
+local function ExtractParryData()
+    local data = { remotes = {}, key32 = nil, key64 = nil, uuids = {} }
+
+    local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
+    if not hotbar then return nil, "Hotbar not found" end
+    local block = hotbar:FindFirstChild("Block")
+    if not block then return nil, "Block not found" end
+
+    local conns = _getconnections(block.Activated)
+
+    -- Find SwordsController connection
+    local parryFn = nil
+    for _, conn in ipairs(conns) do
+        local fn = nil
+        pcall(function() fn = conn.Function end)
+        if fn and _getinfo then
+            local ok, info = pcall(_getinfo, fn)
+            if ok and info and info.source and tostring(info.source):find("SwordsController") then
+                parryFn = fn
+                break
             end
-        elseif type(val) == "number" then
-            -- Large numbers could be hashes
-            if val > 1000000 then
-                table.insert(results, {
-                    path = uvPath,
-                    type = "number",
-                    value = val
-                })
-            end
-        elseif type(val) == "table" then
-            if not visited[val] then
-                visited[val] = true
-                -- Scan table contents
-                local count = 0
-                for k, v in pairs(val) do
-                    count = count + 1
-                    if count > 50 then break end -- limit
+        end
+    end
 
-                    local kStr = tostring(k)
-                    local entryPath = uvPath .. "[" .. kStr .. "]"
+    -- Fallback: use last connection
+    if not parryFn then
+        for _, conn in ipairs(conns) do
+            pcall(function() parryFn = conn.Function end)
+        end
+    end
 
-                    if type(v) == "string" and #v >= 8 then
-                        table.insert(results, {
-                            path = entryPath,
-                            type = "table-string",
-                            key = kStr,
-                            length = #v,
-                            value = v,
-                            preview = #v > 80 and (v:sub(1, 80) .. "...") or v
-                        })
-                    elseif type(v) == "function" then
-                        -- Recurse into nested functions
-                        DeepWalkUpvalues(v, depth + 1, visited, results, entryPath)
-                    elseif type(v) == "table" and not visited[v] then
-                        visited[v] = true
-                        -- One more level into sub-tables
-                        local subCount = 0
-                        for k2, v2 in pairs(v) do
-                            subCount = subCount + 1
-                            if subCount > 30 then break end
-                            local subPath = entryPath .. "[" .. tostring(k2) .. "]"
-                            if type(v2) == "string" and #v2 >= 8 then
-                                table.insert(results, {
-                                    path = subPath,
-                                    type = "nested-string",
-                                    key = tostring(k2),
-                                    length = #v2,
-                                    value = v2,
-                                    preview = #v2 > 80 and (v2:sub(1, 80) .. "...") or v2
-                                })
-                            elseif type(v2) == "function" then
-                                DeepWalkUpvalues(v2, depth + 1, visited, results, subPath)
+    if not parryFn then return nil, "Cannot access parry function" end
+
+    -- Deep walk to find remotes and hex strings
+    local visited = {}
+
+    local function walk(fn, depth)
+        if not fn or depth > 12 then return end
+        if type(fn) == "function" then
+            if visited[fn] then return end
+            visited[fn] = true
+
+            local uvs = {}
+            pcall(function()
+                if _getupvalues then
+                    uvs = _getupvalues(fn)
+                elseif _getupvalue then
+                    for i = 1, 200 do
+                        local n, v = _getupvalue(fn, i)
+                        if n == nil and v == nil then break end
+                        uvs[i] = v
+                    end
+                end
+            end)
+
+            for _, val in pairs(uvs) do
+                if typeof(val) == "Instance" and (val:IsA("RemoteEvent") or val:IsA("UnreliableRemoteEvent")) then
+                    -- Check if already added
+                    local already = false
+                    for _, r in ipairs(data.remotes) do
+                        if r == val then already = true; break end
+                    end
+                    if not already then
+                        table.insert(data.remotes, val)
+                    end
+                elseif type(val) == "string" then
+                    if #val == 32 and val:match("^[a-fA-F0-9]+$") then
+                        data.key32 = val
+                    elseif #val == 64 and val:match("^[a-fA-F0-9]+$") then
+                        data.key64 = val
+                    elseif #val == 36 and val:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then
+                        -- UUID
+                        local already = false
+                        for _, u in ipairs(data.uuids) do
+                            if u == val then already = true; break end
+                        end
+                        if not already then
+                            table.insert(data.uuids, val)
+                        end
+                    end
+                elseif type(val) == "function" then
+                    walk(val, depth + 1)
+                elseif type(val) == "table" and not visited[val] then
+                    visited[val] = true
+                    local c = 0
+                    for _, v in pairs(val) do
+                        c = c + 1; if c > 80 then break end
+                        if typeof(v) == "Instance" and (v:IsA("RemoteEvent") or v:IsA("UnreliableRemoteEvent")) then
+                            local already = false
+                            for _, r in ipairs(data.remotes) do
+                                if r == v then already = true; break end
+                            end
+                            if not already then table.insert(data.remotes, v) end
+                        elseif type(v) == "string" then
+                            if #v == 32 and v:match("^[a-fA-F0-9]+$") then
+                                data.key32 = v
+                            elseif #v == 64 and v:match("^[a-fA-F0-9]+$") then
+                                data.key64 = v
+                            end
+                        elseif type(v) == "function" then
+                            walk(v, depth + 1)
+                        elseif type(v) == "table" and not visited[v] then
+                            visited[v] = true
+                            local c2 = 0
+                            for _, v2 in pairs(v) do
+                                c2 = c2 + 1; if c2 > 60 then break end
+                                if type(v2) == "string" then
+                                    if #v2 == 32 and v2:match("^[a-fA-F0-9]+$") then
+                                        data.key32 = v2
+                                    elseif #v2 == 64 and v2:match("^[a-fA-F0-9]+$") then
+                                        data.key64 = v2
+                                    end
+                                end
                             end
                         end
                     end
                 end
             end
-        elseif type(val) == "function" then
-            -- Recurse into nested function upvalues
-            DeepWalkUpvalues(val, depth + 1, visited, results, uvPath)
-        elseif typeof(val) == "Instance" then
-            if val:IsA("RemoteEvent") or val:IsA("RemoteFunction") then
-                table.insert(results, {
-                    path = uvPath,
-                    type = "remote",
-                    className = val.ClassName,
-                    fullName = val:GetFullName(),
-                    value = val
-                })
-            end
         end
     end
 
-    return results
+    walk(parryFn, 0)
+    return data, nil
 end
 
--- ===================== GC SCAN ===================== --
+-- ===================== TEST FIRES ===================== --
 
-local function ScanGCForKeys()
-    local results = {}
-    local gc = getgc(true)
+addLine("⚡ PrivateKey Test — Blade Ball", WHITE)
+addLine("Extracting parry data...", DIM)
 
-    for _, obj in pairs(gc) do
-        if type(obj) == "table" then
-            -- Look for tables that have a "PrivateKey" or similar field
-            local hasPrivateKey = false
-            local hasHash = false
-            local hasFire = false
+section("EXTRACTION")
 
-            pcall(function()
-                for k, v in pairs(obj) do
-                    local kLower = type(k) == "string" and k:lower() or ""
+local data, err = ExtractParryData()
 
-                    if kLower:find("private") or kLower:find("key") or kLower:find("secret") then
-                        hasPrivateKey = true
-                        table.insert(results, {
-                            source = "GC-table",
-                            key = tostring(k),
-                            valueType = type(v),
-                            value = type(v) == "string" and v or tostring(v),
-                            preview = type(v) == "string" and (#v > 80 and v:sub(1, 80) .. "..." or v) or tostring(v)
-                        })
-                    end
+if not data then
+    addLine("❌ " .. tostring(err), RED)
+    notify("ERROR: " .. tostring(err))
+    return
+end
 
-                    if kLower:find("hash") then
-                        hasHash = true
-                        table.insert(results, {
-                            source = "GC-table",
-                            key = tostring(k),
-                            valueType = type(v),
-                            value = type(v) == "string" and v or tostring(v),
-                            preview = type(v) == "string" and (#v > 80 and v:sub(1, 80) .. "..." or v) or tostring(v)
-                        })
-                    end
-                end
-            end)
-        elseif type(obj) == "function" then
-            -- Check function upvalues for "PrivateKey" named upvalues
-            pcall(function()
-                for i = 1, 50 do
-                    local name, val = getupvalue(obj, i)
-                    if name == nil then break end
-                    if type(name) == "string" then
-                        local nameLower = name:lower()
-                        if nameLower:find("private") or nameLower:find("key") or nameLower:find("secret") or nameLower == "parry_key" then
-                            table.insert(results, {
-                                source = "GC-function-UV",
-                                uvName = name,
-                                uvIndex = i,
-                                valueType = type(val),
-                                value = type(val) == "string" and val or tostring(val),
-                                preview = type(val) == "string" and (#val > 80 and val:sub(1, 80) .. "..." or val) or tostring(val)
-                            })
-                        end
-                    end
-                end
-            end)
+addLine("📡 Remotes found: " .. #data.remotes, GREEN)
+for i, r in ipairs(data.remotes) do
+    addLine("  [" .. i .. "] " .. r:GetFullName():sub(-60), CYAN)
+end
+
+addLine("", DIM)
+addLine("🔑 Key32: " .. (data.key32 or "NOT FOUND"), data.key32 and GREEN or RED)
+addLine("🔑 Key64: " .. (data.key64 and data.key64:sub(1, 40) .. "..." or "NOT FOUND"), data.key64 and GREEN or RED)
+
+if #data.uuids > 0 then
+    addLine("📋 UUIDs: " .. #data.uuids, DIM)
+    for _, u in ipairs(data.uuids) do
+        addLine("  " .. u, DIM)
+    end
+end
+
+if #data.remotes == 0 then
+    addLine("", RED)
+    addLine("❌ No remotes found. Are you in a round?", RED)
+    notify("No remotes found!")
+    return
+end
+
+-- ===================== TEST BUTTONS ===================== --
+
+section("TEST FIRE (press buttons below)")
+addLine("⚠ Each button fires ONCE. Watch if you parry.", YELLOW)
+addLine("  Only test during a round when ball is near you!", YELLOW)
+addLine("", DIM)
+
+local testResults = {}
+
+local function makeTestBtn(text, color, callback)
+    lineOrder = lineOrder + 1
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 30)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    btn.Text = "  ▶ " .. text
+    btn.TextColor3 = color
+    btn.TextSize = 12
+    btn.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold)
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.AutoButtonColor = true
+    btn.LayoutOrder = lineOrder
+    btn.BorderSizePixel = 0
+    btn.Parent = Scroll
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+    local resultLabel = addLine("    waiting...", DIM)
+
+    btn.MouseButton1Click:Connect(function()
+        btn.Text = "  ⏳ " .. text .. " (firing...)"
+        local ok, fireErr = pcall(callback)
+        if ok then
+            resultLabel.Text = "    ✅ Fire sent! Did you parry?"
+            resultLabel.TextColor3 = GREEN
+            btn.Text = "  ✓ " .. text
+            notify("Fire sent: " .. text)
+        else
+            resultLabel.Text = "    ❌ Error: " .. tostring(fireErr):sub(1, 60)
+            resultLabel.TextColor3 = RED
+            btn.Text = "  ✗ " .. text
+            notify("Error: " .. tostring(fireErr):sub(1, 30))
         end
-    end
+    end)
 
-    return results
+    return btn
 end
 
--- ===================== NET MODULE SCAN ===================== --
+-- Test for each remote
+for i, remote in ipairs(data.remotes) do
+    local shortName = "Remote#" .. i
 
--- Look for sleitnick Net module tables in GC
-local function ScanNetModule()
-    local results = {}
-    local gc = getgc(true)
+    -- Test A: FireServer("Move")
+    makeTestBtn(shortName .. " → FireServer(\"Move\")", CYAN, function()
+        remote:FireServer("Move")
+    end)
 
-    for _, obj in pairs(gc) do
-        if type(obj) == "table" then
-            pcall(function()
-                -- Net module usually has: Client, Server, or specific method tables
-                -- Look for tables with RemoteEvent references + string keys
-                local hasRemote = false
-                local hasStringKey = false
-                local remoteRef = nil
-                local stringKeys = {}
-
-                for k, v in pairs(obj) do
-                    if typeof(v) == "Instance" and v:IsA("RemoteEvent") then
-                        hasRemote = true
-                        remoteRef = v
-                    end
-                    if type(k) == "string" and #k >= 16 and k:match("^[a-f0-9]+$") then
-                        hasStringKey = true
-                    end
-                    if type(v) == "string" and #v >= 16 then
-                        table.insert(stringKeys, {key = tostring(k), value = v})
-                    end
-                end
-
-                if hasRemote and #stringKeys > 0 then
-                    table.insert(results, {
-                        source = "Net-module-candidate",
-                        remote = remoteRef and remoteRef:GetFullName() or "?",
-                        strings = stringKeys
-                    })
-                end
-            end)
-        end
+    -- Test B: FireServer("Move", key32)
+    if data.key32 then
+        makeTestBtn(shortName .. " → FireServer(\"Move\", Key32)", GREEN, function()
+            remote:FireServer("Move", data.key32)
+        end)
     end
 
-    return results
+    -- Test C: FireServer(key32)
+    if data.key32 then
+        makeTestBtn(shortName .. " → FireServer(Key32)", YELLOW, function()
+            remote:FireServer(data.key32)
+        end)
+    end
+
+    -- Test D: FireServer(key64, key32)
+    if data.key64 and data.key32 then
+        makeTestBtn(shortName .. " → FireServer(Key64, Key32)", MAGENTA, function()
+            remote:FireServer(data.key64, data.key32)
+        end)
+    end
+
+    -- Test E: FireServer("Move", key64)
+    if data.key64 then
+        makeTestBtn(shortName .. " → FireServer(\"Move\", Key64)", CYAN, function()
+            remote:FireServer("Move", data.key64)
+        end)
+    end
+
+    addLine("", DIM)
 end
 
--- ===================== CONNECTION UPVALUE SCAN ===================== --
-
-local function ScanConnectionUpvalues()
-    local results = {}
-
-    local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-    if not hotbar then
-        log("ERROR: Hotbar not found")
-        return results
+-- Test with UUIDs as potential keys
+if #data.uuids > 0 and #data.remotes > 0 then
+    section("UUID TESTS (Remote #1)")
+    local remote = data.remotes[1]
+    for _, uuid in ipairs(data.uuids) do
+        makeTestBtn("UUID " .. uuid:sub(1, 8) .. "... → FireServer(UUID)", DIM, function()
+            remote:FireServer(uuid)
+        end)
     end
+end
 
-    local block = hotbar:FindFirstChild("Block")
-    if not block then
-        log("ERROR: Block button not found")
-        return results
-    end
+-- ===================== SPAM TEST BUTTON ===================== --
 
-    local conns = getconnections(block.Activated)
-    log("Found", #conns, "connections on Block.Activated")
+section("SPAM TEST (if a single fire works)")
+addLine("  Once you find which fire works, press below to spam it", YELLOW)
+addLine("", DIM)
 
-    for idx, conn in ipairs(conns) do
-        log("")
-        logSection("Connection #" .. idx)
+local spamming = false
+local spamConns = {}
 
-        local fn = nil
-        pcall(function() fn = conn.Function end)
+local function stopSpam()
+    spamming = false
+    for _, c in pairs(spamConns) do pcall(function() c:Disconnect() end) end
+    spamConns = {}
+end
 
-        if fn then
-            local ok, info = pcall(getinfo, fn)
-            if ok and info then
-                log("  Source:", info.source or "?")
-                log("  Name:", info.name or "anonymous")
-                log("  NumParams:", info.numparams or "?")
-            end
+for i, remote in ipairs(data.remotes) do
+    if data.key32 then
+        local spamBtn
+        lineOrder = lineOrder + 1
+        spamBtn = Instance.new("TextButton")
+        spamBtn.Size = UDim2.new(1, 0, 0, 34)
+        spamBtn.BackgroundColor3 = Color3.fromRGB(40, 20, 20)
+        spamBtn.Text = "  🔥 SPAM Remote#" .. i .. " + Key32 (Toggle)"
+        spamBtn.TextColor3 = RED
+        spamBtn.TextSize = 12
+        spamBtn.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
+        spamBtn.TextXAlignment = Enum.TextXAlignment.Left
+        spamBtn.AutoButtonColor = true
+        spamBtn.LayoutOrder = lineOrder
+        spamBtn.BorderSizePixel = 0
+        spamBtn.Parent = Scroll
+        Instance.new("UICorner", spamBtn).CornerRadius = UDim.new(0, 6)
 
-            -- Deep walk this function's upvalues
-            local uvResults = DeepWalkUpvalues(fn, 0, nil, nil, "Conn#" .. idx)
+        local spamStatus = addLine("    OFF", DIM)
 
-            if uvResults and #uvResults > 0 then
-                log("  Found", #uvResults, "interesting values:")
-                for _, r in ipairs(uvResults) do
-                    if r.type == "string" or r.type == "table-string" or r.type == "nested-string" then
-                        log("    📝", r.path)
-                        log("       Length:", r.length, "| Preview:", r.preview)
-                    elseif r.type == "remote" then
-                        log("    📡", r.path)
-                        log("       Class:", r.className, "| FullName:", r.fullName)
-                    elseif r.type == "number" then
-                        log("    🔢", r.path, "=", r.value)
-                    end
-                end
-
-                -- Save to results
-                for _, r in ipairs(uvResults) do
-                    r.connection = idx
-                    table.insert(results, r)
-                end
+        spamBtn.MouseButton1Click:Connect(function()
+            if spamming then
+                stopSpam()
+                spamBtn.Text = "  🔥 SPAM Remote#" .. i .. " + Key32 (Toggle)"
+                spamBtn.BackgroundColor3 = Color3.fromRGB(40, 20, 20)
+                spamStatus.Text = "    OFF"
+                spamStatus.TextColor3 = DIM
             else
-                log("  No interesting values found in upvalues")
-            end
-        else
-            log("  Cannot access function (protected)")
-        end
-    end
+                stopSpam()
+                spamming = true
+                spamBtn.Text = "  ⏹ STOP SPAM Remote#" .. i .. " + Key32"
+                spamBtn.BackgroundColor3 = Color3.fromRGB(20, 40, 20)
+                spamStatus.Text = "    🔥 SPAMMING..."
+                spamStatus.TextColor3 = GREEN
 
-    return results
-end
+                -- Re-extract key in case it changed
+                local freshData = ExtractParryData()
+                local useKey = (freshData and freshData.key32) or data.key32
+                local useRemote = remote
 
--- ===================== CONSTANTS SCAN ===================== --
-
-local function ScanConstants()
-    local results = {}
-
-    local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-    if not hotbar then return results end
-    local block = hotbar:FindFirstChild("Block")
-    if not block then return results end
-
-    local conns = getconnections(block.Activated)
-
-    for idx, conn in ipairs(conns) do
-        local fn = nil
-        pcall(function() fn = conn.Function end)
-        if not fn then continue end
-
-        -- Get constants of this function
-        pcall(function()
-            local constants = getconstants(fn)
-            if constants and #constants > 0 then
-                log("")
-                log("Constants for Connection #" .. idx .. ":")
-                for i, c in ipairs(constants) do
-                    if type(c) == "string" and #c >= 2 then
-                        log("  C[" .. i .. "] =", c)
-                        table.insert(results, {
-                            connection = idx,
-                            constIndex = i,
-                            value = c
-                        })
-                    end
+                if freshData and freshData.remotes[i] then
+                    useRemote = freshData.remotes[i]
                 end
+
+                local fireCount = 0
+                local function fire()
+                    if not spamming then return end
+                    pcall(function()
+                        useRemote:FireServer("Move", useKey)
+                    end)
+                    fireCount = fireCount + 1
+                end
+
+                spamConns[1] = game:GetService("RunService").PreSimulation:Connect(fire)
+                spamConns[2] = game:GetService("RunService").Heartbeat:Connect(fire)
+                spamConns[3] = game:GetService("RunService").RenderStepped:Connect(fire)
+
+                -- Update count display
+                task.spawn(function()
+                    while spamming do
+                        if spamStatus.Parent then
+                            spamStatus.Text = "    🔥 SPAMMING: " .. fireCount .. " fires"
+                        end
+                        task.wait(0.5)
+                    end
+                end)
             end
         end)
     end
-
-    return results
 end
 
--- ===================== MONITOR ===================== --
-
-local lastSnapshot = {}
-
-local function TakeSnapshot(connResults, gcResults)
-    local snap = {}
-    for _, r in ipairs(connResults) do
-        if r.type == "string" or r.type == "table-string" or r.type == "nested-string" then
-            snap[r.path] = r.value
-        end
-    end
-    for _, r in ipairs(gcResults) do
-        snap[r.source .. "/" .. (r.key or r.uvName or "?")] = r.value
-    end
-    return snap
-end
-
-local function CompareSnapshots(old, new)
-    local changes = {}
-    for path, val in pairs(new) do
-        if old[path] ~= val then
-            table.insert(changes, {
-                path = path,
-                oldVal = old[path] or "(new)",
-                newVal = val
-            })
-        end
-    end
-    for path, val in pairs(old) do
-        if new[path] == nil then
-            table.insert(changes, {
-                path = path,
-                oldVal = val,
-                newVal = "(removed)"
-            })
-        end
-    end
-    return changes
-end
-
--- ===================== MAIN ===================== --
-
-logSection("PRIVATE KEY FINDER — BLADE BALL")
-log("Starting scan...")
-log("")
-
--- 1) Scan connection upvalues (deep walk)
-logSection("PHASE 1: Connection Upvalues (deep walk)")
-local connResults = ScanConnectionUpvalues()
-
--- 2) Scan constants
-logSection("PHASE 2: Function Constants")
-local constResults = ScanConstants()
-
--- 3) GC scan for PrivateKey / Hash fields
-logSection("PHASE 3: GC Scan (PrivateKey/Hash fields)")
-local gcResults = ScanGCForKeys()
-
-if #gcResults > 0 then
-    log("Found", #gcResults, "potential key-related values:")
-    for _, r in ipairs(gcResults) do
-        log("  🔑", r.source, "| Key:", r.key or r.uvName or "?", "| Type:", r.valueType)
-        log("     Preview:", r.preview)
-    end
-else
-    log("No 'PrivateKey'/'Hash'/'Secret' fields found in GC")
-end
-
--- 4) Net module scan
-logSection("PHASE 4: Net Module Candidates")
-local netResults = ScanNetModule()
-
-if #netResults > 0 then
-    log("Found", #netResults, "Net module candidates:")
-    for _, r in ipairs(netResults) do
-        log("  📡 Remote:", r.remote)
-        for _, s in ipairs(r.strings) do
-            log("     Key:", s.key, "| Value:", s.value:sub(1, 60))
-        end
-    end
-else
-    log("No Net module candidates found")
-end
-
--- 5) Summary
-logSection("SUMMARY")
-
--- Collect all potential keys
-local potentialKeys = {}
-for _, r in ipairs(connResults) do
-    if (r.type == "string" or r.type == "table-string" or r.type == "nested-string") and r.length >= 16 then
-        table.insert(potentialKeys, {
-            source = "Connection #" .. (r.connection or "?"),
-            path = r.path,
-            length = r.length,
-            preview = r.preview
-        })
-    end
-end
-for _, r in ipairs(gcResults) do
-    table.insert(potentialKeys, {
-        source = r.source,
-        path = r.key or r.uvName or "?",
-        length = #(r.value or ""),
-        preview = r.preview
-    })
-end
-
-if #potentialKeys > 0 then
-    log("🔑 " .. #potentialKeys .. " potential keys/secrets found:")
-    for i, pk in ipairs(potentialKeys) do
-        log("  [" .. i .. "] Source:", pk.source)
-        log("      Path:", pk.path)
-        log("      Length:", pk.length)
-        log("      Value:", pk.preview)
-        log("")
-    end
-else
-    log("❌ No potential keys found")
-end
-
--- 6) Start monitor (re-scan every 30 seconds)
-logSection("MONITOR: Re-scanning every 30s for changes")
-
-lastSnapshot = TakeSnapshot(connResults, gcResults)
-
-local monitorConn
-monitorConn = task.spawn(function()
-    local scanCount = 0
-    while true do
-        task.wait(30)
-        scanCount = scanCount + 1
-
-        -- Re-scan
-        local newConnResults = {}
-        pcall(function()
-            newConnResults = ScanConnectionUpvalues()
-        end)
-
-        local newGcResults = {}
-        pcall(function()
-            newGcResults = ScanGCForKeys()
-        end)
-
-        local newSnap = TakeSnapshot(newConnResults, newGcResults)
-        local changes = CompareSnapshots(lastSnapshot, newSnap)
-
-        if #changes > 0 then
-            log("")
-            logSection("⚡ CHANGE DETECTED (scan #" .. scanCount .. ")")
-            for _, ch in ipairs(changes) do
-                log("  Path:", ch.path)
-                log("  Old:", tostring(ch.oldVal):sub(1, 60))
-                log("  New:", tostring(ch.newVal):sub(1, 60))
-                log("")
-            end
-        else
-            log("Monitor scan #" .. scanCount .. " — no changes")
-        end
-
-        lastSnapshot = newSnap
-    end
+-- Cleanup on destroy
+ScreenGui.Destroying:Connect(function()
+    stopSpam()
 end)
 
-log("")
-log("✅ Scanner running. Check the console (F9) for results.")
-log("   Monitor will re-scan every 30 seconds and report any key changes.")
+section("DONE")
+addLine("  Test each button one by one during a round", GREEN)
+addLine("  Watch if the ball reacts (parry effect)", DIM)
+notify("Ready! Test during a round")
