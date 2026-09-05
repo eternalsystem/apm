@@ -22,7 +22,6 @@ local ActivateBind   = { type = 'Key', value = Enum.KeyCode.X }
 local UIBind         = { type = 'Key', value = Enum.KeyCode.RightShift }
 local activeListener = nil
 
-local SpamDelay      = 0
 local ActivateMode   = 'Toggle'
 local IsAnchored     = false
 
@@ -157,11 +156,7 @@ local function StartSpam()
 
     ForceUnlock()
 
-    local interval = SpamDelay
-    if interval <= 0 then
-        interval = 0.033 -- ~30/sec
-    end
-
+    local interval = 0.033 -- ~30/sec, locked
     local lastFire = 0
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
@@ -217,8 +212,8 @@ local Font_Regular = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.F
 
 local Panel = Instance.new('Frame')
 Panel.Name = 'Panel'
-Panel.Size = UDim2.fromOffset(320, 232)
-Panel.Position = UDim2.new(0.5, -160, 0.5, -116)
+Panel.Size = UDim2.fromOffset(320, 198)
+Panel.Position = UDim2.new(0.5, -160, 0.5, -99)
 Panel.BackgroundColor3 = C.panel
 Panel.BackgroundTransparency = 0
 Panel.BorderSizePixel = 0
@@ -370,29 +365,18 @@ activateBindBtn.TextSize = 13
 local modeBtn = MakeRow(Panel, 100, 'Mode')
 modeBtn.Text = ActivateMode .. '  ▼'
 
-local delayBtn = MakeRow(Panel, 134, 'Speed')
-local delays = {
-    {name = '30/sec',     val = 0},
-    {name = '20/sec',     val = 0.05},
-    {name = '10/sec',     val = 0.1},
-    {name = '5/sec',      val = 0.2},
-    {name = '2/sec',      val = 0.5},
-}
-local delayIdx = 1
-delayBtn.Text = delays[delayIdx].name .. '  ▼'
-
 -- Divider
 local SectionDiv = Instance.new('Frame')
 SectionDiv.Size = UDim2.new(1, 0, 0, 1)
-SectionDiv.Position = UDim2.fromOffset(0, 172)
+SectionDiv.Position = UDim2.fromOffset(0, 138)
 SectionDiv.BackgroundColor3 = C.divider
 SectionDiv.BorderSizePixel = 0
 SectionDiv.Parent = Panel
 
 -- UI section
-MakeSectionLabel(Panel, 178, 'UI')
+MakeSectionLabel(Panel, 144, 'UI')
 
-local uiBindBtn, uiBindStroke = MakeRow(Panel, 194, 'Show / Hide')
+local uiBindBtn, uiBindStroke = MakeRow(Panel, 160, 'Show / Hide')
 uiBindBtn.Text = '[' .. GetBindName(UIBind) .. ']'
 uiBindBtn.FontFace = Font_Semi
 uiBindBtn.TextSize = 13
@@ -519,13 +503,6 @@ modeBtn.MouseButton1Click:Connect(function()
         StopSpam()
         UpdateStatus()
     end
-end)
-
-delayBtn.MouseButton1Click:Connect(function()
-    delayIdx = (delayIdx % #delays) + 1
-    SpamDelay = delays[delayIdx].val
-    delayBtn.Text = delays[delayIdx].name .. '  ▼'
-    if SpamEnabled then StartSpam() end
 end)
 
 -- ==================== BIND LISTENING ==================== --
