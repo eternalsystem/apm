@@ -161,27 +161,29 @@ local function StartSpam()
 
     ForceUnlock()
 
-    -- ForceUnlock EVERY frame (2 setupvalue calls = near-zero cost)
-    -- Fire at 60/sec — sound is muted so audio overhead is gone
-    -- 60/sec = one attempt every 16ms = ~38 shots in the tightest window (625ms)
+    -- Adaptive rate: 30/sec idle → 60/sec during clash
+    -- ParrySuccess = clash detected → boost for 2 seconds
     local lastFire = 0
+    local boostUntil = 0
+
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
         ForceUnlock()
         local now = tick()
-        if now - lastFire >= 0.016 then
+        local interval = now < boostUntil and 0.016 or 0.033
+        if now - lastFire >= interval then
             lastFire = now
             pcall(fireFn)
         end
     end)
 
-    -- Instant re-fire on parry success — does NOT reset lastFire
-    -- so it's a free bonus shot that doesn't delay the regular cycle
+    -- ParrySuccess → boost to 60/sec + instant re-fire
     local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
     local parryRemote = remotes and remotes:FindFirstChild("ParrySuccess")
     if parryRemote then
         spamConns[2] = parryRemote.OnClientEvent:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
+            boostUntil = tick() + 2
             ForceUnlock()
             pcall(fireFn)
         end)
