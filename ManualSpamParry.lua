@@ -156,22 +156,24 @@ local function StartSpam()
 
     ForceUnlock()
 
-    local interval = 0.033 -- ~30/sec, locked
-    local lastFire = 0
+    -- Fire every single frame — no interval, no delay
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
-
-        -- Force unlock EVERY frame: u165=false, u163=false, u166=0
-        -- This is THE key difference: without this, missed parries lock you for 1.3s
-        -- With this, every firesignal reaches PRY and fires the remote
         ForceUnlock()
-
-        local now = tick()
-        if now - lastFire >= interval then
-            lastFire = now
-            pcall(fireFn)
-        end
+        pcall(fireFn)
     end)
+
+    -- Instant re-fire on parry success: don't wait for next Heartbeat
+    -- When server confirms parry, u165/u163 are already false → fire immediately
+    local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+    local parryRemote = remotes and remotes:FindFirstChild("ParrySuccess")
+    if parryRemote then
+        spamConns[2] = parryRemote.OnClientEvent:Connect(function()
+            if not SpamEnabled or spamSession ~= mySession then return end
+            ForceUnlock()
+            pcall(fireFn)
+        end)
+    end
 end
 
 -- ===================== BIND HELPERS ===================== --
