@@ -1,534 +1,646 @@
 --[[
-    SwordsController Direct Reader
-    Decompiles SwordsController + PRY directly into clipboard/GUI
-    No file saving — avoids the Windows trailing-space issue entirely
+    Manual Spam Parry
+    Methods: DirectCall (fastest) / Signal (fallback)
+    No hookmetamethod, no VIM, no __namecall hook
 ]]
 
 repeat task.wait() until game:IsLoaded()
-task.wait(3)
 
-local CoreGui = game:GetService("CoreGui")
-local StarterGui = game:GetService("StarterGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
+local Players           = game:GetService('Players')
+local Player            = Players.LocalPlayer
+local UserInputService  = game:GetService('UserInputService')
+local RunService        = game:GetService('RunService')
+local CoreGui           = game:GetService('CoreGui')
+local TweenService      = game:GetService('TweenService')
 
--- ===================== GUI ===================== --
+-- ===================== CONFIG ===================== --
 
-local oldGui = CoreGui:FindFirstChild("SWC_Reader")
-if oldGui then oldGui:Destroy() end
+local SpamEnabled    = false
+local spamConns      = {}
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SWC_Reader"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.DisplayOrder = 1004
-pcall(function() if gethui then ScreenGui.Parent = gethui() return end end)
-if not ScreenGui.Parent then
-    pcall(function() if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end end)
-    ScreenGui.Parent = CoreGui
-end
+local ActivateBind   = { type = 'Key', value = Enum.KeyCode.X }
+local UIBind         = { type = 'Key', value = Enum.KeyCode.RightShift }
+local activeListener = nil  -- 'activate' or 'ui' or nil
 
-local BG = Instance.new("Frame")
-BG.Size = UDim2.new(0, 500, 0, 400)
-BG.Position = UDim2.new(0.5, -250, 0.5, -200)
-BG.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-BG.BackgroundTransparency = 0.05
-BG.BorderSizePixel = 0
-BG.Active = true
-BG.Draggable = true
-BG.Parent = ScreenGui
-Instance.new("UICorner", BG).CornerRadius = UDim.new(0, 8)
+local SpamDelay      = 0
+local MethodName     = 'Signal'
+local ActivateMode   = 'Toggle'  -- 'Toggle' or 'Hold'
+local IsAnchored     = false
 
-local TitleBar = Instance.new("TextLabel")
-TitleBar.Size = UDim2.new(1, 0, 0, 28)
-TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-TitleBar.Text = "  ⚔️ SwordsController Reader"
-TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
-TitleBar.TextSize = 13
-TitleBar.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
-TitleBar.TextXAlignment = Enum.TextXAlignment.Left
-TitleBar.BorderSizePixel = 0
-TitleBar.Parent = BG
-Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
+-- ===================== COLORS ===================== --
 
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -20, 0, 50)
-StatusLabel.Position = UDim2.fromOffset(10, 32)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Starting..."
-StatusLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
-StatusLabel.TextSize = 11
-StatusLabel.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json")
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
-StatusLabel.TextWrapped = true
-StatusLabel.Parent = BG
+local C = {
+    panel      = Color3.fromRGB(17, 17, 17),
+    border     = Color3.fromRGB(34, 34, 34),
+    surface    = Color3.fromRGB(24, 24, 24),
+    surfaceHov = Color3.fromRGB(31, 31, 31),
+    divider    = Color3.fromRGB(30, 30, 30),
+    text       = Color3.fromRGB(232, 232, 232),
+    textMid    = Color3.fromRGB(153, 153, 153),
+    textDim    = Color3.fromRGB(85, 85, 85),
+    white      = Color3.fromRGB(255, 255, 255),
+    black      = Color3.fromRGB(0, 0, 0),
+}
 
--- Scrolling source view
-local ScrollFrame = Instance.new("ScrollingFrame")
-ScrollFrame.Size = UDim2.new(1, -20, 1, -120)
-ScrollFrame.Position = UDim2.fromOffset(10, 85)
-ScrollFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
-ScrollFrame.BorderSizePixel = 0
-ScrollFrame.ScrollBarThickness = 6
-ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-ScrollFrame.Parent = BG
-Instance.new("UICorner", ScrollFrame).CornerRadius = UDim.new(0, 4)
+-- ===================== PARRY SETUP ===================== --
 
-local SourceLabel = Instance.new("TextLabel")
-SourceLabel.Size = UDim2.new(1, -10, 0, 0)
-SourceLabel.Position = UDim2.fromOffset(5, 0)
-SourceLabel.AutomaticSize = Enum.AutomaticSize.Y
-SourceLabel.BackgroundTransparency = 1
-SourceLabel.Text = ""
-SourceLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-SourceLabel.TextSize = 10
-SourceLabel.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json")
-SourceLabel.TextXAlignment = Enum.TextXAlignment.Left
-SourceLabel.TextYAlignment = Enum.TextYAlignment.Top
-SourceLabel.TextWrapped = true
-SourceLabel.RichText = false
-SourceLabel.Parent = ScrollFrame
+local activatedSignal = nil
+local _getconnections = typeof(getconnections) == "function" and getconnections or nil
+local _getinfo = typeof(getinfo) == "function" and getinfo or (typeof(debug) == "table" and typeof(debug.getinfo) == "function" and debug.getinfo) or nil
+local _getupvalues = typeof(getupvalues) == "function" and getupvalues or (typeof(debug) == "table" and typeof(debug.getupvalues) == "function" and debug.getupvalues) or nil
+local _setupvalue = typeof(setupvalue) == "function" and setupvalue or (typeof(debug) == "table" and typeof(debug.setupvalue) == "function" and debug.setupvalue) or nil
 
--- Button row
-local BtnRow = Instance.new("Frame")
-BtnRow.Size = UDim2.new(1, -20, 0, 28)
-BtnRow.Position = UDim2.new(0, 10, 1, -32)
-BtnRow.BackgroundTransparency = 1
-BtnRow.Parent = BG
-
-local function makeBtn(text, color, xPos)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 150, 1, 0)
-    btn.Position = UDim2.new(0, xPos, 0, 0)
-    btn.BackgroundColor3 = color
-    btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.TextSize = 11
-    btn.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
-    btn.AutoButtonColor = true
-    btn.BorderSizePixel = 0
-    btn.Parent = BtnRow
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
-    return btn
-end
-
-local CopyBtn = makeBtn("📋 Copy Current", Color3.fromRGB(40, 80, 40), 0)
-local NextBtn = makeBtn("➡️ Next File", Color3.fromRGB(40, 40, 80), 160)
-local UploadBtn = makeBtn("☁️ Upload All", Color3.fromRGB(80, 50, 20), 320)
-
-local function setStatus(t) StatusLabel.Text = t end
-
-local function notify(text)
+local function NukeCooldown()
+    if not _getconnections or not _getinfo or not _getupvalues or not _setupvalue then return end
     pcall(function()
-        StarterGui:SetCore("SendNotification", {Title = "SWC", Text = text, Duration = 6})
-    end)
-end
+        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
+        if not hotbar then return end
+        local block = hotbar:FindFirstChild("Block")
+        if not block then return end
 
--- ===================== REQUEST ===================== --
-
-local _request = nil
-if typeof(request) == "function" then _request = request
-elseif typeof(http_request) == "function" then _request = http_request
-elseif typeof(syn) == "table" and typeof(syn.request) == "function" then _request = syn.request
-elseif typeof(http) == "table" and typeof(http.request) == "function" then _request = http.request
-elseif typeof(fluxus) == "table" and typeof(fluxus.request) == "function" then _request = fluxus.request
-end
-
--- ===================== ZIP (for upload) ===================== --
-
-local function numToLE2(n) return string.char(n%256, math.floor(n/256)%256) end
-local function numToLE4(n) return string.char(n%256, math.floor(n/256)%256, math.floor(n/65536)%256, math.floor(n/16777216)%256) end
-
-local crc32_table = {}
-for i = 0, 255 do
-    local c = i
-    for _ = 1, 8 do
-        if bit32.band(c, 1) == 1 then c = bit32.bxor(bit32.rshift(c, 1), 0xEDB88320) else c = bit32.rshift(c, 1) end
-    end
-    crc32_table[i] = c
-end
-local function crc32(data)
-    local crc = 0xFFFFFFFF
-    for i = 1, #data do crc = bit32.bxor(bit32.rshift(crc, 8), crc32_table[bit32.band(bit32.bxor(crc, string.byte(data, i)), 0xFF)]) end
-    return bit32.bxor(crc, 0xFFFFFFFF)
-end
-local function buildZip(files)
-    local lh, ce, off = {}, {}, 0
-    for _, f in ipairs(files) do
-        local n, d, c, s = f.name, f.data, crc32(f.data), #f.data
-        local h = "PK\3\4"..numToLE2(20)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE4(c)..numToLE4(s)..numToLE4(s)..numToLE2(#n)..numToLE2(0)..n..d
-        lh[#lh+1] = h
-        ce[#ce+1] = "PK\1\2"..numToLE2(20)..numToLE2(20)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE4(c)..numToLE4(s)..numToLE4(s)..numToLE2(#n)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE4(0)..numToLE4(off)..n
-        off = off + #h
-    end
-    local cd = table.concat(ce)
-    return table.concat(lh)..cd.."PK\5\6"..numToLE2(0)..numToLE2(0)..numToLE2(#files)..numToLE2(#files)..numToLE4(#cd)..numToLE4(off)..numToLE2(0)
-end
-
--- ===================== MAIN ===================== --
-
-task.spawn(function()
-    if typeof(decompile) ~= "function" then
-        setStatus("❌ decompile() not available!")
-        return
-    end
-
-    setStatus("🔍 Finding SwordsController...")
-
-    -- Find the SwordsController module
-    local Controllers = ReplicatedStorage:FindFirstChild("Controllers")
-    if not Controllers then
-        setStatus("❌ ReplicatedStorage.Controllers not found!")
-        return
-    end
-
-    -- Search for SwordsController (with or without trailing space)
-    local swcModule = nil
-    local pryModule = nil
-    local allTargets = {}
-
-    for _, child in ipairs(Controllers:GetChildren()) do
-        -- Check name with/without trailing spaces
-        local cleanName = child.Name:gsub("%s+$", "")
-        if cleanName == "SwordsController" then
-            if child:IsA("ModuleScript") then
-                swcModule = child
-                table.insert(allTargets, {script = child, label = "SwordsController (main)"})
-            end
-            -- Check children (PRY module)
-            for _, sub in ipairs(child:GetDescendants()) do
-                if sub:IsA("ModuleScript") or sub:IsA("LocalScript") then
-                    table.insert(allTargets, {script = sub, label = "SwordsController/" .. sub.Name})
-                    if sub.Name:upper():find("PRY") then
-                        pryModule = sub
-                    end
-                end
-            end
-        end
-    end
-
-    -- Also search via getscripts() as backup
-    if #allTargets == 0 then
-        setStatus("🔍 Not in Children, trying getscripts()...")
-        pcall(function()
-            for _, s in ipairs(getscripts()) do
-                local fn = s:GetFullName()
-                if fn:find("SwordsController") then
-                    table.insert(allTargets, {script = s, label = fn:gsub(".*Controllers%.", "")})
-                    if s.Name:upper():find("PRY") then pryModule = s end
-                    if fn:match("SwordsController%s*$") or fn:match("SwordsController%s*%.module") then
-                        swcModule = s
-                    end
-                end
-            end
-        end)
-    end
-
-    -- Also find it by scanning ControllerRunners
-    if #allTargets == 0 then
-        setStatus("🔍 Searching ControllerRunners...")
-        pcall(function()
-            local player = game:GetService("Players").LocalPlayer
-            local runners = player.PlayerScripts:FindFirstChild("ClientLoader")
-            if runners then
-                runners = runners:FindFirstChild("ControllerRunners")
-            end
-            if runners then
-                for _, runner in ipairs(runners:GetChildren()) do
-                    local cleanName = runner.Name:gsub("%s+$", "")
-                    if cleanName == "SwordsController" then
-                        local target = runner:FindFirstChild("Target")
-                        if target and target:IsA("ObjectValue") and target.Value then
-                            local actualModule = target.Value
-                            table.insert(allTargets, {script = actualModule, label = "SwordsController (via runner Target)"})
-                            swcModule = actualModule
-                            for _, sub in ipairs(actualModule:GetDescendants()) do
-                                if sub:IsA("ModuleScript") or sub:IsA("LocalScript") then
-                                    table.insert(allTargets, {script = sub, label = "SwordsController/" .. sub.Name})
-                                    if sub.Name:upper():find("PRY") then pryModule = sub end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end)
-    end
-
-    if #allTargets == 0 then
-        setStatus("❌ SwordsController not found anywhere!\nTry clicking Block once first.")
-        return
-    end
-
-    setStatus(
-        "✅ Found " .. #allTargets .. " target(s)\n" ..
-        "📄 SWC: " .. (swcModule and swcModule:GetFullName() or "?") .. "\n" ..
-        "📄 PRY: " .. (pryModule and pryModule:GetFullName() or "?") .. "\n" ..
-        "🔧 Decompiling..."
-    )
-    task.wait()
-
-    -- Decompile all targets
-    local results = {} -- {name, source, size}
-
-    for i, target in ipairs(allTargets) do
-        setStatus("🔧 Decompiling " .. i .. "/" .. #allTargets .. ": " .. target.label)
-        task.wait()
-
-        local ok, source = pcall(function() return decompile(target.script) end)
-        if not ok or not source or #source == 0 then
-            pcall(function() source = target.script.Source end)
-        end
-        if not source or #source == 0 then
-            source = "-- [DECOMPILE FAILED for " .. target.script:GetFullName() .. "]"
-        end
-
-        local cleanName = target.label:gsub("%s+/", "/"):gsub("%s+%.", "."):gsub("%s+$", "")
-        table.insert(results, {
-            name = cleanName,
-            source = source,
-            size = #source
-        })
-    end
-
-    -- Also add runtime deep scan of Connection #3
-    local runtimeDump = "-- ===== RUNTIME: Connection #3 Deep Scan =====\n\n"
-    pcall(function()
-        local _gc = getconnections
-        local _gi = getinfo or debug.info
-        local _gu = getupvalues or debug.getupvalues
-        local _gc2 = getconstants or debug.getconstants
-        local _gp = getprotos or debug.getprotos
-
-        local block = game:GetService("Players").LocalPlayer.PlayerGui.Hotbar.Block
-        local conns = _gc(block.Activated)
-
-        for idx, conn in ipairs(conns) do
+        local conns = _getconnections(block.Activated)
+        for _, conn in ipairs(conns) do
             local fn = nil
             pcall(function() fn = conn.Function end)
             if not fn then continue end
-            local ok, info = pcall(_gi, fn)
-            if not ok or not info then continue end
-            if not tostring(info.source or ""):find("SwordsController") then continue end
 
-            runtimeDump = runtimeDump .. "-- Found SwordsController handler (conn #" .. idx .. ")\n"
-            runtimeDump = runtimeDump .. "-- Source: " .. tostring(info.source) .. "\n"
-            runtimeDump = runtimeDump .. "-- Line: " .. tostring(info.currentline or info.linedefined) .. "\n\n"
+            local ok, info = pcall(_getinfo, fn)
+            if not ok or not info or not info.source then continue end
+            if not tostring(info.source):find("SwordsController") then continue end
 
-            -- Deep upvalue walk (5 levels)
-            local function dumpUpvalues(f, prefix, depth)
-                if depth > 5 then return end
-                local ok2, uvs = pcall(_gu, f)
-                if not ok2 or not uvs then return end
-                for k, v in pairs(uvs) do
-                    local vt = typeof(v)
-                    local vs = tostring(v)
-                    if #vs > 200 then vs = vs:sub(1, 200) .. "..." end
-                    runtimeDump = runtimeDump .. prefix .. "UV[" .. k .. "] = (" .. vt .. ") " .. vs .. "\n"
+            -- Walk UV[1] → UV[2] to find the cooldown
+            local uvs1 = nil
+            pcall(function() uvs1 = _getupvalues(fn) end)
+            if not uvs1 or type(uvs1[1]) ~= "function" then return end
 
-                    -- If it's a table, dump its string keys
-                    if type(v) == "table" and depth <= 3 then
-                        local count = 0
-                        for tk, tv in pairs(v) do
-                            if count > 30 then
-                                runtimeDump = runtimeDump .. prefix .. "  ... (truncated)\n"
-                                break
-                            end
-                            if type(tk) == "string" then
-                                runtimeDump = runtimeDump .. prefix .. "  ." .. tk .. " = (" .. typeof(tv) .. ") " .. tostring(tv):sub(1,120) .. "\n"
-                            elseif type(tk) == "number" then
-                                runtimeDump = runtimeDump .. prefix .. "  [" .. tk .. "] = (" .. typeof(tv) .. ") " .. tostring(tv):sub(1,120) .. "\n"
-                            end
-                            count = count + 1
-                        end
-                    end
+            local uvs2 = nil
+            pcall(function() uvs2 = _getupvalues(uvs1[1]) end)
+            if not uvs2 or type(uvs2[2]) ~= "function" then return end
 
-                    -- Recurse into functions
-                    if type(v) == "function" then
-                        -- Get constants of this function
-                        if _gc2 then
-                            pcall(function()
-                                local consts = _gc2(v)
-                                if consts and #consts > 0 then
-                                    runtimeDump = runtimeDump .. prefix .. "  CONSTANTS:\n"
-                                    for ck, cv in pairs(consts) do
-                                        runtimeDump = runtimeDump .. prefix .. "    C[" .. ck .. "] = (" .. typeof(cv) .. ") " .. tostring(cv) .. "\n"
-                                    end
-                                end
-                            end)
-                        end
-                        -- Get info
-                        if _gi then
-                            pcall(function()
-                                local fi = _gi(v)
-                                if fi then
-                                    runtimeDump = runtimeDump .. prefix .. "  INFO: src=" .. tostring(fi.source) .. " line=" .. tostring(fi.currentline or fi.linedefined) .. "\n"
-                                end
-                            end)
-                        end
-                        -- Recurse
-                        dumpUpvalues(v, prefix .. "  ", depth + 1)
-                    end
+            local uvs3 = nil
+            pcall(function() uvs3 = _getupvalues(uvs2[2]) end)
+            if not uvs3 then return end
+
+            -- Find and zero out number upvalues that look like cooldowns (0.5 - 5.0 range)
+            for idx, val in pairs(uvs3) do
+                if type(val) == "number" and val >= 0.5 and val <= 5.0 then
+                    pcall(function()
+                        _setupvalue(uvs2[2], idx, 0)
+                    end)
                 end
             end
 
-            runtimeDump = runtimeDump .. "-- === Upvalue tree ===\n"
-            dumpUpvalues(fn, "-- ", 0)
-            runtimeDump = runtimeDump .. "\n"
-
-            -- Also dump constants of the handler itself
-            if _gc2 then
-                pcall(function()
-                    local consts = _gc2(fn)
-                    runtimeDump = runtimeDump .. "-- Handler constants: " .. #consts .. "\n"
-                    for k, v in pairs(consts) do
-                        runtimeDump = runtimeDump .. "--   C[" .. k .. "] = (" .. typeof(v) .. ") " .. tostring(v) .. "\n"
-                    end
-                end)
-            end
-
-            -- Get protos (sub-functions)
-            if _gp then
-                pcall(function()
-                    local protos = _gp(fn)
-                    runtimeDump = runtimeDump .. "\n-- Handler protos: " .. #protos .. "\n"
-                    for pi, pf in ipairs(protos) do
-                        runtimeDump = runtimeDump .. "--   Proto[" .. pi .. "]: " .. tostring(pf) .. "\n"
-                        if _gc2 then
-                            pcall(function()
-                                local pc = _gc2(pf)
-                                for pk, pv in pairs(pc) do
-                                    runtimeDump = runtimeDump .. "--     C[" .. pk .. "] = (" .. typeof(pv) .. ") " .. tostring(pv) .. "\n"
-                                end
-                            end)
-                        end
-                    end
-                end)
-            end
-
-            break -- Only need connection #3
+            break
         end
     end)
+end
 
-    table.insert(results, {
-        name = "_RUNTIME_DEEP_SCAN",
-        source = runtimeDump,
-        size = #runtimeDump
-    })
+local function Setup()
+    local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
+    if not hotbar then return end
+    local block = hotbar:FindFirstChild("Block")
+    if not block then return end
+    activatedSignal = block.Activated
+    -- Kill the 1.3s parry cooldown
+    NukeCooldown()
+end
 
-    -- Sort: biggest first
-    table.sort(results, function(a, b) return a.size > b.size end)
+Setup()
 
-    -- Display first result
-    local currentIdx = 1
-    local function showResult(idx)
-        if idx < 1 or idx > #results then return end
-        currentIdx = idx
-        local r = results[idx]
-        setStatus(
-            "📄 [" .. idx .. "/" .. #results .. "] " .. r.name ..
-            " (" .. r.size .. " bytes)\n" ..
-            "💡 Use buttons below to copy or navigate"
-        )
-        -- Truncate display to avoid lag (show first 50K chars)
-        local display = r.source
-        if #display > 50000 then
-            display = display:sub(1, 50000) .. "\n\n-- [TRUNCATED - full source in clipboard/upload]"
-        end
-        SourceLabel.Text = display
+-- ===================== PARRY METHOD ===================== --
+
+local function ParrySignal()
+    if activatedSignal then
+        firesignal(activatedSignal)
     end
-    showResult(1)
+end
 
-    -- Button handlers
-    CopyBtn.MouseButton1Click:Connect(function()
-        pcall(function()
-            setclipboard(results[currentIdx].source)
-            notify("Copied " .. results[currentIdx].name .. " (" .. results[currentIdx].size .. " bytes)")
-            CopyBtn.Text = "✅ Copied!"
-            task.delay(2, function() CopyBtn.Text = "📋 Copy Current" end)
-        end)
+-- ===================== SPAM ===================== --
+
+local spamSession = 0
+
+local function StopSpam()
+    SpamEnabled = false
+    spamSession = spamSession + 1
+    for i, c in pairs(spamConns) do
+        pcall(function() c:Disconnect() end)
+        spamConns[i] = nil
+    end
+    spamConns = {}
+end
+
+local function StartSpam()
+    StopSpam()
+    SpamEnabled = true
+    spamSession = spamSession + 1
+    local mySession = spamSession
+
+    local fireFn = ParrySignal
+
+    -- Re-nuke cooldown each time spam starts
+    NukeCooldown()
+
+    -- Use rate-limited firing to avoid FPS drops
+    -- firesignal triggers sound+analytics+parry each call
+    -- so we limit to a reasonable rate even at "Max"
+    local interval = SpamDelay
+    if interval <= 0 then
+        interval = 0.033 -- ~30 fires/sec = plenty with cooldown at 0
+    end
+
+    -- Continuously nuke cooldown: handler resets u166=u634=1.3 on each parry
+    -- so we must zero it every frame to keep it at 0
+    local nukeCounter = 0
+    local lastFire = 0
+    spamConns[1] = RunService.Heartbeat:Connect(function()
+        if not SpamEnabled or spamSession ~= mySession then return end
+
+        -- Nuke cooldown every ~10 frames (low cost, keeps u166 at 0)
+        nukeCounter = nukeCounter + 1
+        if nukeCounter >= 10 then
+            nukeCounter = 0
+            NukeCooldown()
+        end
+
+        local now = tick()
+        if now - lastFire >= interval then
+            lastFire = now
+            pcall(fireFn)
+        end
+    end)
+end
+
+-- ===================== BIND HELPERS ===================== --
+
+local function GetBindName(bind)
+    if bind.type == 'Key' then return bind.value.Name end
+    if bind.value == Enum.UserInputType.MouseButton1 then return 'Mouse1' end
+    if bind.value == Enum.UserInputType.MouseButton2 then return 'Mouse2' end
+    if bind.value == Enum.UserInputType.MouseButton3 then return 'Mouse3' end
+    return tostring(bind.value)
+end
+
+local function InputMatchesBind(input, bind)
+    if bind.type == 'Key' then return input.KeyCode == bind.value end
+    return input.UserInputType == bind.value
+end
+
+-- ===================== UI ===================== --
+
+local oldGui = CoreGui:FindFirstChild('MSP_UI')
+if oldGui then oldGui:Destroy() end
+
+local ScreenGui = Instance.new('ScreenGui')
+ScreenGui.Name = 'MSP_UI'
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.DisplayOrder = 999
+
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end end)
+pcall(function() if gethui then ScreenGui.Parent = gethui() return end end)
+if not ScreenGui.Parent then ScreenGui.Parent = CoreGui end
+
+local Font_Bold    = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Bold)
+local Font_Semi    = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.SemiBold)
+local Font_Regular = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.FontWeight.Regular)
+
+-- ==================== FULL PANEL ==================== --
+
+local Panel = Instance.new('Frame')
+Panel.Name = 'Panel'
+Panel.Size = UDim2.fromOffset(320, 232)
+Panel.Position = UDim2.new(0.5, -160, 0.5, -116)
+Panel.BackgroundColor3 = C.panel
+Panel.BackgroundTransparency = 0
+Panel.BorderSizePixel = 0
+Panel.Active = true
+Panel.Draggable = true
+Panel.Parent = ScreenGui
+
+Instance.new('UICorner', Panel).CornerRadius = UDim.new(0, 12)
+local panelStroke = Instance.new('UIStroke', Panel)
+panelStroke.Color = C.border
+panelStroke.Thickness = 1
+
+-- Header
+local Header = Instance.new('Frame')
+Header.Name = 'Header'
+Header.Size = UDim2.new(1, 0, 0, 42)
+Header.BackgroundTransparency = 1
+Header.BorderSizePixel = 0
+Header.Parent = Panel
+
+local Title = Instance.new('TextLabel')
+Title.Size = UDim2.new(0, 100, 1, 0)
+Title.Position = UDim2.fromOffset(18, 0)
+Title.BackgroundTransparency = 1
+Title.Text = 'Spam Parry'
+Title.TextColor3 = C.white
+Title.FontFace = Font_Bold
+Title.TextSize = 15
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local StatusLabel = Instance.new('TextLabel')
+StatusLabel.Name = 'Status'
+StatusLabel.Size = UDim2.fromOffset(30, 14)
+StatusLabel.Position = UDim2.fromOffset(125, 14)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = 'OFF'
+StatusLabel.TextColor3 = C.textDim
+StatusLabel.FontFace = Font_Semi
+StatusLabel.TextSize = 11
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = Header
+
+-- Header buttons
+local function MakeHeaderBtn(text, posFromRight)
+    local btn = Instance.new('TextButton')
+    btn.Size = UDim2.fromOffset(22, 22)
+    btn.Position = UDim2.new(1, -posFromRight, 0.5, -11)
+    btn.BackgroundColor3 = C.surface
+    btn.BackgroundTransparency = 1
+    btn.Text = text
+    btn.TextColor3 = C.textDim
+    btn.FontFace = Font_Regular
+    btn.TextSize = 14
+    btn.AutoButtonColor = false
+    btn.BorderSizePixel = 0
+    btn.Parent = Header
+    Instance.new('UICorner', btn).CornerRadius = UDim.new(1, 0)
+    btn.MouseEnter:Connect(function()
+        btn.BackgroundTransparency = 0
+        btn.TextColor3 = C.text
+    end)
+    btn.MouseLeave:Connect(function()
+        btn.BackgroundTransparency = 1
+        btn.TextColor3 = C.textDim
+    end)
+    return btn
+end
+
+local CloseBtn = MakeHeaderBtn('✕', 30)
+local AnchorBtn = MakeHeaderBtn('―', 56)
+
+-- Divider under header
+local HeaderDiv = Instance.new('Frame')
+HeaderDiv.Size = UDim2.new(1, 0, 0, 1)
+HeaderDiv.Position = UDim2.new(0, 0, 0, 42)
+HeaderDiv.BackgroundColor3 = C.divider
+HeaderDiv.BorderSizePixel = 0
+HeaderDiv.Parent = Panel
+
+-- ==================== SECTIONS ==================== --
+
+local function MakeSectionLabel(parent, yPos, text)
+    local lbl = Instance.new('TextLabel')
+    lbl.Size = UDim2.new(1, -36, 0, 14)
+    lbl.Position = UDim2.fromOffset(18, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = C.textDim
+    lbl.FontFace = Font_Semi
+    lbl.TextSize = 9
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = parent
+    return lbl
+end
+
+local function MakeRow(parent, yPos, label)
+    local row = Instance.new('Frame')
+    row.Size = UDim2.new(1, -36, 0, 34)
+    row.Position = UDim2.fromOffset(18, yPos)
+    row.BackgroundTransparency = 1
+    row.Parent = parent
+
+    local lbl = Instance.new('TextLabel')
+    lbl.Size = UDim2.new(0, 80, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label
+    lbl.TextColor3 = C.textMid
+    lbl.FontFace = Font_Regular
+    lbl.TextSize = 13
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local btn = Instance.new('TextButton')
+    btn.Size = UDim2.fromOffset(130, 28)
+    btn.Position = UDim2.new(1, -130, 0.5, -14)
+    btn.BackgroundColor3 = C.surface
+    btn.TextColor3 = C.text
+    btn.FontFace = Font_Regular
+    btn.TextSize = 12
+    btn.AutoButtonColor = false
+    btn.BorderSizePixel = 0
+    btn.Parent = row
+    Instance.new('UICorner', btn).CornerRadius = UDim.new(0, 6)
+    local btnStroke = Instance.new('UIStroke', btn)
+    btnStroke.Color = C.border
+    btnStroke.Thickness = 1
+
+    btn.MouseEnter:Connect(function()
+        btn.BackgroundColor3 = C.surfaceHov
+        btnStroke.Color = Color3.fromRGB(42, 42, 42)
+    end)
+    btn.MouseLeave:Connect(function()
+        btn.BackgroundColor3 = C.surface
+        btnStroke.Color = C.border
     end)
 
-    NextBtn.MouseButton1Click:Connect(function()
-        local next = currentIdx + 1
-        if next > #results then next = 1 end
-        showResult(next)
-    end)
+    return btn, btnStroke
+end
 
-    UploadBtn.MouseButton1Click:Connect(function()
-        if not _request then
-            notify("request() not available!")
+-- PARRY section
+MakeSectionLabel(Panel, 50, 'PARRY')
+
+local activateBindBtn, activateBindStroke = MakeRow(Panel, 66, 'Activate')
+activateBindBtn.Text = '[' .. GetBindName(ActivateBind) .. ']'
+activateBindBtn.FontFace = Font_Semi
+activateBindBtn.TextSize = 13
+
+local modeBtn = MakeRow(Panel, 100, 'Mode')
+modeBtn.Text = ActivateMode .. '  ▼'
+
+local delayBtn = MakeRow(Panel, 134, 'Speed')
+local delays = {
+    {name = '30/sec',     val = 0},
+    {name = '20/sec',     val = 0.05},
+    {name = '10/sec',     val = 0.1},
+    {name = '5/sec',      val = 0.2},
+    {name = '2/sec',      val = 0.5},
+}
+local delayIdx = 1
+delayBtn.Text = delays[delayIdx].name .. '  ▼'
+
+-- Divider
+local SectionDiv = Instance.new('Frame')
+SectionDiv.Size = UDim2.new(1, 0, 0, 1)
+SectionDiv.Position = UDim2.fromOffset(0, 172)
+SectionDiv.BackgroundColor3 = C.divider
+SectionDiv.BorderSizePixel = 0
+SectionDiv.Parent = Panel
+
+-- UI section
+MakeSectionLabel(Panel, 178, 'UI')
+
+local uiBindBtn, uiBindStroke = MakeRow(Panel, 194, 'Show / Hide')
+uiBindBtn.Text = '[' .. GetBindName(UIBind) .. ']'
+uiBindBtn.FontFace = Font_Semi
+uiBindBtn.TextSize = 13
+
+-- ==================== ANCHOR (MINI) ==================== --
+
+local AnchorPanel = Instance.new('Frame')
+AnchorPanel.Name = 'Anchor'
+AnchorPanel.Size = UDim2.fromOffset(140, 36)
+AnchorPanel.Position = UDim2.new(0.5, -70, 0.5, -18)
+AnchorPanel.BackgroundColor3 = C.panel
+AnchorPanel.BorderSizePixel = 0
+AnchorPanel.Active = true
+AnchorPanel.Draggable = true
+AnchorPanel.Visible = false
+AnchorPanel.Parent = ScreenGui
+
+Instance.new('UICorner', AnchorPanel).CornerRadius = UDim.new(0, 10)
+local anchorStroke = Instance.new('UIStroke', AnchorPanel)
+anchorStroke.Color = C.border
+anchorStroke.Thickness = 1
+
+local AnchorTitle = Instance.new('TextLabel')
+AnchorTitle.Size = UDim2.fromOffset(24, 36)
+AnchorTitle.Position = UDim2.fromOffset(14, 0)
+AnchorTitle.BackgroundTransparency = 1
+AnchorTitle.Text = 'SP'
+AnchorTitle.TextColor3 = C.textMid
+AnchorTitle.FontFace = Font_Bold
+AnchorTitle.TextSize = 12
+AnchorTitle.TextXAlignment = Enum.TextXAlignment.Left
+AnchorTitle.Parent = AnchorPanel
+
+local AnchorStatus = Instance.new('TextLabel')
+AnchorStatus.Size = UDim2.fromOffset(30, 36)
+AnchorStatus.Position = UDim2.fromOffset(42, 0)
+AnchorStatus.BackgroundTransparency = 1
+AnchorStatus.Text = 'OFF'
+AnchorStatus.TextColor3 = C.textDim
+AnchorStatus.FontFace = Font_Semi
+AnchorStatus.TextSize = 10
+AnchorStatus.TextXAlignment = Enum.TextXAlignment.Left
+AnchorStatus.Parent = AnchorPanel
+
+-- Separator line in anchor
+local AnchorSep = Instance.new('Frame')
+AnchorSep.Size = UDim2.fromOffset(1, 16)
+AnchorSep.Position = UDim2.new(0, 85, 0.5, -8)
+AnchorSep.BackgroundColor3 = C.divider
+AnchorSep.BorderSizePixel = 0
+AnchorSep.Parent = AnchorPanel
+
+-- Expand button
+local ExpandBtn = Instance.new('TextButton')
+ExpandBtn.Size = UDim2.fromOffset(22, 22)
+ExpandBtn.Position = UDim2.new(0, 100, 0.5, -11)
+ExpandBtn.BackgroundTransparency = 1
+ExpandBtn.Text = '＋'
+ExpandBtn.TextColor3 = C.textDim
+ExpandBtn.FontFace = Font_Regular
+ExpandBtn.TextSize = 13
+ExpandBtn.AutoButtonColor = false
+ExpandBtn.BorderSizePixel = 0
+ExpandBtn.Parent = AnchorPanel
+Instance.new('UICorner', ExpandBtn).CornerRadius = UDim.new(1, 0)
+
+ExpandBtn.MouseEnter:Connect(function()
+    ExpandBtn.BackgroundTransparency = 0
+    ExpandBtn.BackgroundColor3 = C.surface
+    ExpandBtn.TextColor3 = C.text
+end)
+ExpandBtn.MouseLeave:Connect(function()
+    ExpandBtn.BackgroundTransparency = 1
+    ExpandBtn.TextColor3 = C.textDim
+end)
+
+-- ==================== STATUS UPDATE ==================== --
+
+local function UpdateStatus()
+    local label = SpamEnabled and 'ON' or 'OFF'
+    local color = SpamEnabled and C.white or C.textDim
+    StatusLabel.Text = label
+    StatusLabel.TextColor3 = color
+    AnchorStatus.Text = label
+    AnchorStatus.TextColor3 = color
+end
+
+-- ==================== ANCHOR LOGIC ==================== --
+
+local function GoAnchor()
+    IsAnchored = true
+    -- Copy position from panel to anchor
+    AnchorPanel.Position = Panel.Position
+    Panel.Visible = false
+    AnchorPanel.Visible = true
+end
+
+local function GoFull()
+    IsAnchored = false
+    -- Copy position from anchor to panel
+    Panel.Position = AnchorPanel.Position
+    AnchorPanel.Visible = false
+    Panel.Visible = true
+end
+
+AnchorBtn.MouseButton1Click:Connect(GoAnchor)
+ExpandBtn.MouseButton1Click:Connect(GoFull)
+
+-- ==================== CLOSE ==================== --
+
+CloseBtn.MouseButton1Click:Connect(function()
+    Panel.Visible = false
+    AnchorPanel.Visible = false
+end)
+
+-- ==================== DROPDOWNS ==================== --
+
+local modeOptions = {'Toggle', 'Hold'}
+local modeIdx = 1
+
+modeBtn.MouseButton1Click:Connect(function()
+    modeIdx = (modeIdx % #modeOptions) + 1
+    ActivateMode = modeOptions[modeIdx]
+    modeBtn.Text = ActivateMode .. '  ▼'
+    if SpamEnabled then
+        StopSpam()
+        UpdateStatus()
+    end
+end)
+
+delayBtn.MouseButton1Click:Connect(function()
+    delayIdx = (delayIdx % #delays) + 1
+    SpamDelay = delays[delayIdx].val
+    delayBtn.Text = delays[delayIdx].name .. '  ▼'
+    if SpamEnabled then StartSpam() end
+end)
+
+-- ==================== BIND LISTENING ==================== --
+
+local function StartListening(which)
+    activeListener = which
+    local btn, stroke
+    if which == 'activate' then
+        btn, stroke = activateBindBtn, activateBindStroke
+    else
+        btn, stroke = uiBindBtn, uiBindStroke
+    end
+    btn.Text = '[ ... ]'
+    btn.BackgroundColor3 = C.white
+    btn.TextColor3 = C.black
+    stroke.Color = C.white
+end
+
+local function FinishBind(which, bindType, bindValue)
+    local bind = { type = bindType, value = bindValue }
+    local btn, stroke
+
+    if which == 'activate' then
+        ActivateBind = bind
+        btn, stroke = activateBindBtn, activateBindStroke
+    else
+        UIBind = bind
+        btn, stroke = uiBindBtn, uiBindStroke
+    end
+
+    btn.Text = '[' .. GetBindName(bind) .. ']'
+    btn.BackgroundColor3 = C.surface
+    btn.TextColor3 = C.text
+    stroke.Color = C.border
+    activeListener = nil
+end
+
+activateBindBtn.MouseButton1Click:Connect(function() StartListening('activate') end)
+uiBindBtn.MouseButton1Click:Connect(function() StartListening('ui') end)
+
+-- ==================== INPUT ==================== --
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    local kc = input.KeyCode
+    local uit = input.UserInputType
+
+    -- Bind listening
+    if activeListener then
+        if uit == Enum.UserInputType.MouseMovement or uit == Enum.UserInputType.Focus then return end
+
+        if kc and kc ~= Enum.KeyCode.Unknown then
+            FinishBind(activeListener, 'Key', kc)
             return
         end
+        if uit == Enum.UserInputType.MouseButton1
+            or uit == Enum.UserInputType.MouseButton2
+            or uit == Enum.UserInputType.MouseButton3 then
+            FinishBind(activeListener, 'Mouse', uit)
+            return
+        end
+        if uit and uit ~= Enum.UserInputType.None
+            and uit ~= Enum.UserInputType.Keyboard
+            and uit ~= Enum.UserInputType.Touch then
+            FinishBind(activeListener, 'Mouse', uit)
+            return
+        end
+        return
+    end
 
-        UploadBtn.Text = "☁️ Uploading..."
-
-        task.spawn(function()
-            -- Build ZIP with sanitized names
-            local zipFiles = {}
-            for _, r in ipairs(results) do
-                local fname = r.name:gsub("[^%w%./%-_]", "_")
-                if not fname:find("%.lua$") then
-                    fname = fname .. ".lua"
-                end
-                table.insert(zipFiles, {name = fname, data = r.source})
-            end
-
-            local zipData = buildZip(zipFiles)
-
-            -- Get gofile server
-            local serverName = "store1"
-            pcall(function()
-                local res = _request({Url = "https://api.gofile.io/servers", Method = "GET"})
-                local data = HttpService:JSONDecode(res.Body)
-                if data.data and data.data.servers then
-                    serverName = data.data.servers[1].name
-                end
-            end)
-
-            local boundary = "----SWC" .. tostring(math.random(100000, 999999))
-            local fileName = "SwordsController_Source_" .. os.date("%Y%m%d_%H%M%S") .. ".zip"
-
-            local body = "--" .. boundary .. "\r\n"
-                .. 'Content-Disposition: form-data; name="file"; filename="' .. fileName .. '"\r\n'
-                .. "Content-Type: application/zip\r\n\r\n"
-                .. zipData .. "\r\n--" .. boundary .. "--\r\n"
-
-            local ok, res = pcall(function()
-                return _request({
-                    Url = "https://" .. serverName .. ".gofile.io/contents/uploadfile",
-                    Method = "POST",
-                    Headers = {["Content-Type"] = "multipart/form-data; boundary=" .. boundary},
-                    Body = body
-                })
-            end)
-
-            if ok and res and res.Body then
-                pcall(function()
-                    local data = HttpService:JSONDecode(res.Body)
-                    if data.status == "ok" and data.data then
-                        local link = data.data.downloadPage or ("https://gofile.io/d/" .. (data.data.code or "?"))
-                        UploadBtn.Text = "✅ Uploaded!"
-                        notify("Upload done: " .. link)
-                        setStatus(
-                            "✅ UPLOADED: " .. #zipFiles .. " files\n" ..
-                            "🔗 " .. link .. "\n" ..
-                            "📄 Currently viewing: [" .. currentIdx .. "/" .. #results .. "] " .. results[currentIdx].name
-                        )
-                        pcall(function() setclipboard(link) end)
-                    else
-                        UploadBtn.Text = "❌ Failed"
-                        notify("Upload failed: " .. tostring(data.status))
-                    end
-                end)
+    -- UI Show/Hide
+    if InputMatchesBind(input, UIBind) then
+        if Panel.Visible or AnchorPanel.Visible then
+            -- Hide
+            Panel.Visible = false
+            AnchorPanel.Visible = false
+        else
+            -- Show whichever was last used
+            if IsAnchored then
+                AnchorPanel.Visible = true
             else
-                UploadBtn.Text = "❌ Error"
-                notify("Upload request failed")
+                Panel.Visible = true
             end
-            task.delay(3, function() UploadBtn.Text = "☁️ Upload All" end)
-        end)
-    end)
+        end
+        return
+    end
 
-    notify("Ready! " .. #results .. " files decompiled")
+    if processed then return end
+
+    -- Spam activate
+    if InputMatchesBind(input, ActivateBind) then
+        if ActivateMode == 'Toggle' then
+            if SpamEnabled then StopSpam() else StartSpam() end
+            UpdateStatus()
+        else -- Hold
+            if not SpamEnabled then
+                StartSpam()
+                UpdateStatus()
+            end
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if ActivateMode == 'Hold' and InputMatchesBind(input, ActivateBind) then
+        if SpamEnabled then
+            StopSpam()
+            UpdateStatus()
+        end
+    end
+end)
+
+-- ==================== AUTO-STOP ==================== --
+
+-- Re-setup parry references on respawn (but don't auto-stop spam)
+Player.CharacterAdded:Connect(function(char)
+    task.delay(2, function()
+        Setup()
+    end)
+end)
+
+-- ==================== CLEANUP ==================== --
+
+ScreenGui.Destroying:Connect(function()
+    StopSpam()
 end)
