@@ -1,6 +1,6 @@
 --[[
-    Manual Spam Parry
-    Methods: DirectCall (fastest) / Signal (fallback)
+    Manual Spam Parry v2
+    ForceUnlock: zeros u165/u163 every frame so EVERY firesignal reaches PRY
     No hookmetamethod, no VIM, no __namecall hook
 ]]
 
@@ -20,11 +20,10 @@ local spamConns      = {}
 
 local ActivateBind   = { type = 'Key', value = Enum.KeyCode.X }
 local UIBind         = { type = 'Key', value = Enum.KeyCode.RightShift }
-local activeListener = nil  -- 'activate' or 'ui' or nil
+local activeListener = nil
 
 local SpamDelay      = 0
-local MethodName     = 'Signal'
-local ActivateMode   = 'Toggle'  -- 'Toggle' or 'Hold'
+local ActivateMode   = 'Toggle'
 local IsAnchored     = false
 
 -- ===================== COLORS ===================== --
@@ -42,7 +41,7 @@ local C = {
     black      = Color3.fromRGB(0, 0, 0),
 }
 
--- ===================== PARRY SETUP ===================== --
+-- ===================== PARRY ENGINE ===================== --
 
 local activatedSignal = nil
 local _getconnections = typeof(getconnections) == "function" and getconnections or nil
@@ -50,64 +49,84 @@ local _getinfo = typeof(getinfo) == "function" and getinfo or (typeof(debug) == 
 local _getupvalues = typeof(getupvalues) == "function" and getupvalues or (typeof(debug) == "table" and typeof(debug.getupvalues) == "function" and debug.getupvalues) or nil
 local _setupvalue = typeof(setupvalue) == "function" and setupvalue or (typeof(debug) == "table" and typeof(debug.setupvalue) == "function" and debug.setupvalue) or nil
 
-local function NukeCooldown()
-    if not _getconnections or not _getinfo or not _getupvalues or not _setupvalue then return end
-    pcall(function()
-        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-        if not hotbar then return end
-        local block = hotbar:FindFirstChild("Block")
-        if not block then return end
+-- Cached reference to u177 (the inner parry handler function)
+-- u177 upvalues: [1]=u162(stunned) [2]=u165(parrying) [3]=u163(animating) ... [12]=u166(1.3s)
+local _cachedU177 = nil
 
-        local conns = _getconnections(block.Activated)
-        for _, conn in ipairs(conns) do
+local function FindU177()
+    if _cachedU177 then return _cachedU177 end
+    if not _getconnections or not _getinfo or not _getupvalues then return nil end
+
+    local ok, result = pcall(function()
+        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
+        if not hotbar then return nil end
+        local block = hotbar:FindFirstChild("Block")
+        if not block then return nil end
+
+        for _, conn in ipairs(_getconnections(block.Activated)) do
             local fn = nil
             pcall(function() fn = conn.Function end)
             if not fn then continue end
 
-            local ok, info = pcall(_getinfo, fn)
-            if not ok or not info or not info.source then continue end
-            if not tostring(info.source):find("SwordsController") then continue end
+            local info = nil
+            pcall(function() info = _getinfo(fn) end)
+            if not info or not info.source or not tostring(info.source):find("SwordsController") then continue end
 
-            -- Walk UV[1] → UV[2] to find the cooldown
+            -- Conn#3 fn → UV[1] (wrapper) → UV[2] (u177)
             local uvs1 = nil
             pcall(function() uvs1 = _getupvalues(fn) end)
-            if not uvs1 or type(uvs1[1]) ~= "function" then return end
+            if not uvs1 or type(uvs1[1]) ~= "function" then return nil end
 
             local uvs2 = nil
             pcall(function() uvs2 = _getupvalues(uvs1[1]) end)
-            if not uvs2 or type(uvs2[2]) ~= "function" then return end
+            if not uvs2 or type(uvs2[2]) ~= "function" then return nil end
 
-            local uvs3 = nil
-            pcall(function() uvs3 = _getupvalues(uvs2[2]) end)
-            if not uvs3 then return end
-
-            -- Find and zero out number upvalues that look like cooldowns (0.5 - 5.0 range)
-            for idx, val in pairs(uvs3) do
-                if type(val) == "number" and val >= 0.5 and val <= 5.0 then
-                    pcall(function()
-                        _setupvalue(uvs2[2], idx, 0)
-                    end)
-                end
-            end
-
-            break
+            return uvs2[2] -- u177
         end
+        return nil
     end)
+
+    if ok and result then
+        _cachedU177 = result
+    end
+    return _cachedU177
+end
+
+-- Force u165=false, u163=false so the handler never blocks
+-- Also zeros u166 (1.3s cooldown value) for good measure
+local function ForceUnlock()
+    if not _setupvalue then return end
+    local fn = FindU177()
+    if not fn then return end
+
+    pcall(_setupvalue, fn, 2, false)  -- u165 = false (parrying flag)
+    pcall(_setupvalue, fn, 3, false)  -- u163 = false (animation flag)
+
+    -- Also zero any cooldown numbers in range [0.5, 5.0]
+    local uvs = nil
+    pcall(function() uvs = _getupvalues(fn) end)
+    if uvs then
+        for idx, val in pairs(uvs) do
+            if type(val) == "number" and val >= 0.5 and val <= 5.0 then
+                pcall(_setupvalue, fn, idx, 0)
+            end
+        end
+    end
 end
 
 local function Setup()
+    _cachedU177 = nil -- force re-find on respawn
     local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
     if not hotbar then return end
     local block = hotbar:FindFirstChild("Block")
     if not block then return end
     activatedSignal = block.Activated
-    -- Kill the 1.3s parry cooldown
-    NukeCooldown()
+    ForceUnlock()
 end
 
 Setup()
 
--- ===================== PARRY METHOD ===================== --
+-- ===================== PARRY FIRE ===================== --
 
 local function ParrySignal()
     if activatedSignal then
@@ -134,33 +153,23 @@ local function StartSpam()
     SpamEnabled = true
     spamSession = spamSession + 1
     local mySession = spamSession
-
     local fireFn = ParrySignal
 
-    -- Re-nuke cooldown each time spam starts
-    NukeCooldown()
+    ForceUnlock()
 
-    -- Use rate-limited firing to avoid FPS drops
-    -- firesignal triggers sound+analytics+parry each call
-    -- so we limit to a reasonable rate even at "Max"
     local interval = SpamDelay
     if interval <= 0 then
-        interval = 0.033 -- ~30 fires/sec = plenty with cooldown at 0
+        interval = 0.033 -- ~30/sec
     end
 
-    -- Continuously nuke cooldown: handler resets u166=u634=1.3 on each parry
-    -- so we must zero it every frame to keep it at 0
-    local nukeCounter = 0
     local lastFire = 0
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
 
-        -- Nuke cooldown every ~10 frames (low cost, keeps u166 at 0)
-        nukeCounter = nukeCounter + 1
-        if nukeCounter >= 10 then
-            nukeCounter = 0
-            NukeCooldown()
-        end
+        -- Force unlock EVERY frame: u165=false, u163=false, u166=0
+        -- This is THE key difference: without this, missed parries lock you for 1.3s
+        -- With this, every firesignal reaches PRY and fires the remote
+        ForceUnlock()
 
         local now = tick()
         if now - lastFire >= interval then
@@ -475,7 +484,6 @@ end
 
 local function GoAnchor()
     IsAnchored = true
-    -- Copy position from panel to anchor
     AnchorPanel.Position = Panel.Position
     Panel.Visible = false
     AnchorPanel.Visible = true
@@ -483,7 +491,6 @@ end
 
 local function GoFull()
     IsAnchored = false
-    -- Copy position from anchor to panel
     Panel.Position = AnchorPanel.Position
     AnchorPanel.Visible = false
     Panel.Visible = true
@@ -565,10 +572,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
     local kc = input.KeyCode
     local uit = input.UserInputType
 
-    -- Bind listening
     if activeListener then
         if uit == Enum.UserInputType.MouseMovement or uit == Enum.UserInputType.Focus then return end
-
         if kc and kc ~= Enum.KeyCode.Unknown then
             FinishBind(activeListener, 'Key', kc)
             return
@@ -588,14 +593,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
         return
     end
 
-    -- UI Show/Hide
     if InputMatchesBind(input, UIBind) then
         if Panel.Visible or AnchorPanel.Visible then
-            -- Hide
             Panel.Visible = false
             AnchorPanel.Visible = false
         else
-            -- Show whichever was last used
             if IsAnchored then
                 AnchorPanel.Visible = true
             else
@@ -607,12 +609,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
     if processed then return end
 
-    -- Spam activate
     if InputMatchesBind(input, ActivateBind) then
         if ActivateMode == 'Toggle' then
             if SpamEnabled then StopSpam() else StartSpam() end
             UpdateStatus()
-        else -- Hold
+        else
             if not SpamEnabled then
                 StartSpam()
                 UpdateStatus()
@@ -630,9 +631,8 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- ==================== AUTO-STOP ==================== --
+-- ==================== RESPAWN ==================== --
 
--- Re-setup parry references on respawn (but don't auto-stop spam)
 Player.CharacterAdded:Connect(function(char)
     task.delay(2, function()
         Setup()
