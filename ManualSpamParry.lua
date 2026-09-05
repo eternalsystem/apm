@@ -156,11 +156,18 @@ local function StartSpam()
 
     ForceUnlock()
 
-    -- Fire every single frame — no interval, no delay
+    -- ForceUnlock runs EVERY frame (keeps flags at false no matter what)
+    -- Fire capped at 60/sec — adapts down if FPS is lower
+    -- Above 60fps: unlock still runs every frame, fire skips excess frames
+    local lastFire = 0
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
         ForceUnlock()
-        pcall(fireFn)
+        local now = tick()
+        if now - lastFire >= 0.016 then -- ~60/sec cap
+            lastFire = now
+            pcall(fireFn)
+        end
     end)
 
     -- Instant re-fire on parry success: don't wait for next Heartbeat
