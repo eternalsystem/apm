@@ -1,26 +1,26 @@
 --[[
-    SwordsController Targeted Extractor
-    Extracts ONLY the missing files that couldn't be saved due to
-    trailing spaces in folder names + any other parry-related scripts.
-    Sanitizes paths, ZIPs, and uploads to gofile.io
+    SwordsController Direct Reader
+    Decompiles SwordsController + PRY directly into clipboard/GUI
+    No file saving — avoids the Windows trailing-space issue entirely
 ]]
 
 repeat task.wait() until game:IsLoaded()
 task.wait(3)
 
-local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local StarterGui = game:GetService("StarterGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
 -- ===================== GUI ===================== --
 
-local oldGui = CoreGui:FindFirstChild("SWC_Dump_UI")
+local oldGui = CoreGui:FindFirstChild("SWC_Reader")
 if oldGui then oldGui:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SWC_Dump_UI"
+ScreenGui.Name = "SWC_Reader"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.DisplayOrder = 1003
+ScreenGui.DisplayOrder = 1004
 pcall(function() if gethui then ScreenGui.Parent = gethui() return end end)
 if not ScreenGui.Parent then
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end end)
@@ -28,8 +28,8 @@ if not ScreenGui.Parent then
 end
 
 local BG = Instance.new("Frame")
-BG.Size = UDim2.new(0, 440, 0, 320)
-BG.Position = UDim2.new(0.5, -220, 0.5, -160)
+BG.Size = UDim2.new(0, 500, 0, 400)
+BG.Position = UDim2.new(0.5, -250, 0.5, -200)
 BG.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
 BG.BackgroundTransparency = 0.05
 BG.BorderSizePixel = 0
@@ -41,7 +41,7 @@ Instance.new("UICorner", BG).CornerRadius = UDim.new(0, 8)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 28)
 TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-TitleBar.Text = "  ⚔️ SwordsController Extractor"
+TitleBar.Text = "  ⚔️ SwordsController Reader"
 TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleBar.TextSize = 13
 TitleBar.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
@@ -51,53 +51,77 @@ TitleBar.Parent = BG
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 8)
 
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -32, 0, 0)
-StatusLabel.Position = UDim2.fromOffset(16, 40)
-StatusLabel.AutomaticSize = Enum.AutomaticSize.Y
+StatusLabel.Size = UDim2.new(1, -20, 0, 50)
+StatusLabel.Position = UDim2.fromOffset(10, 32)
 StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Scanning for targets..."
+StatusLabel.Text = "Starting..."
 StatusLabel.TextColor3 = Color3.fromRGB(160, 160, 160)
-StatusLabel.TextSize = 12
-StatusLabel.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json", Enum.FontWeight.Regular)
+StatusLabel.TextSize = 11
+StatusLabel.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json")
 StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
 StatusLabel.TextWrapped = true
 StatusLabel.Parent = BG
 
-local ProgressBar = Instance.new("Frame")
-ProgressBar.Size = UDim2.new(1, -32, 0, 6)
-ProgressBar.Position = UDim2.new(0, 16, 1, -50)
-ProgressBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-ProgressBar.BorderSizePixel = 0
-ProgressBar.Parent = BG
-Instance.new("UICorner", ProgressBar).CornerRadius = UDim.new(1, 0)
+-- Scrolling source view
+local ScrollFrame = Instance.new("ScrollingFrame")
+ScrollFrame.Size = UDim2.new(1, -20, 1, -120)
+ScrollFrame.Position = UDim2.fromOffset(10, 85)
+ScrollFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+ScrollFrame.BorderSizePixel = 0
+ScrollFrame.ScrollBarThickness = 6
+ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ScrollFrame.Parent = BG
+Instance.new("UICorner", ScrollFrame).CornerRadius = UDim.new(0, 4)
 
-local ProgressFill = Instance.new("Frame")
-ProgressFill.Size = UDim2.new(0, 0, 1, 0)
-ProgressFill.BackgroundColor3 = Color3.fromRGB(255, 160, 40)
-ProgressFill.BorderSizePixel = 0
-ProgressFill.Parent = ProgressBar
-Instance.new("UICorner", ProgressFill).CornerRadius = UDim.new(1, 0)
+local SourceLabel = Instance.new("TextLabel")
+SourceLabel.Size = UDim2.new(1, -10, 0, 0)
+SourceLabel.Position = UDim2.fromOffset(5, 0)
+SourceLabel.AutomaticSize = Enum.AutomaticSize.Y
+SourceLabel.BackgroundTransparency = 1
+SourceLabel.Text = ""
+SourceLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+SourceLabel.TextSize = 10
+SourceLabel.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json")
+SourceLabel.TextXAlignment = Enum.TextXAlignment.Left
+SourceLabel.TextYAlignment = Enum.TextYAlignment.Top
+SourceLabel.TextWrapped = true
+SourceLabel.RichText = false
+SourceLabel.Parent = ScrollFrame
 
-local LinkLabel = Instance.new("TextButton")
-LinkLabel.Size = UDim2.new(1, -32, 0, 28)
-LinkLabel.Position = UDim2.new(0, 16, 1, -36)
-LinkLabel.BackgroundColor3 = Color3.fromRGB(30, 60, 30)
-LinkLabel.Text = ""
-LinkLabel.TextColor3 = Color3.fromRGB(100, 255, 120)
-LinkLabel.TextSize = 11
-LinkLabel.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json", Enum.FontWeight.SemiBold)
-LinkLabel.Visible = false
-LinkLabel.AutoButtonColor = true
-LinkLabel.BorderSizePixel = 0
-LinkLabel.Parent = BG
-Instance.new("UICorner", LinkLabel).CornerRadius = UDim.new(0, 5)
+-- Button row
+local BtnRow = Instance.new("Frame")
+BtnRow.Size = UDim2.new(1, -20, 0, 28)
+BtnRow.Position = UDim2.new(0, 10, 1, -32)
+BtnRow.BackgroundTransparency = 1
+BtnRow.Parent = BG
 
-local function setStatus(text) StatusLabel.Text = text end
-local function setProgress(pct) ProgressFill.Size = UDim2.new(math.clamp(pct, 0, 1), 0, 1, 0) end
+local function makeBtn(text, color, xPos)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 150, 1, 0)
+    btn.Position = UDim2.new(0, xPos, 0, 0)
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 11
+    btn.FontFace = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
+    btn.AutoButtonColor = true
+    btn.BorderSizePixel = 0
+    btn.Parent = BtnRow
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+    return btn
+end
+
+local CopyBtn = makeBtn("📋 Copy Current", Color3.fromRGB(40, 80, 40), 0)
+local NextBtn = makeBtn("➡️ Next File", Color3.fromRGB(40, 40, 80), 160)
+local UploadBtn = makeBtn("☁️ Upload All", Color3.fromRGB(80, 50, 20), 320)
+
+local function setStatus(t) StatusLabel.Text = t end
+
 local function notify(text)
     pcall(function()
-        StarterGui:SetCore("SendNotification", {Title = "SWC Dump", Text = text, Duration = 8})
+        StarterGui:SetCore("SendNotification", {Title = "SWC", Text = text, Duration = 6})
     end)
 end
 
@@ -111,165 +135,35 @@ elseif typeof(http) == "table" and typeof(http.request) == "function" then _requ
 elseif typeof(fluxus) == "table" and typeof(fluxus.request) == "function" then _request = fluxus.request
 end
 
--- ===================== ZIP BUILDER ===================== --
+-- ===================== ZIP (for upload) ===================== --
 
-local function numToLE2(n)
-    return string.char(n % 256, math.floor(n / 256) % 256)
-end
-local function numToLE4(n)
-    return string.char(
-        n % 256,
-        math.floor(n / 256) % 256,
-        math.floor(n / 65536) % 256,
-        math.floor(n / 16777216) % 256
-    )
-end
+local function numToLE2(n) return string.char(n%256, math.floor(n/256)%256) end
+local function numToLE4(n) return string.char(n%256, math.floor(n/256)%256, math.floor(n/65536)%256, math.floor(n/16777216)%256) end
 
 local crc32_table = {}
 for i = 0, 255 do
     local c = i
     for _ = 1, 8 do
-        if bit32.band(c, 1) == 1 then
-            c = bit32.bxor(bit32.rshift(c, 1), 0xEDB88320)
-        else
-            c = bit32.rshift(c, 1)
-        end
+        if bit32.band(c, 1) == 1 then c = bit32.bxor(bit32.rshift(c, 1), 0xEDB88320) else c = bit32.rshift(c, 1) end
     end
     crc32_table[i] = c
 end
-
 local function crc32(data)
     local crc = 0xFFFFFFFF
-    for i = 1, #data do
-        local b = string.byte(data, i)
-        crc = bit32.bxor(bit32.rshift(crc, 8), crc32_table[bit32.band(bit32.bxor(crc, b), 0xFF)])
-    end
+    for i = 1, #data do crc = bit32.bxor(bit32.rshift(crc, 8), crc32_table[bit32.band(bit32.bxor(crc, string.byte(data, i)), 0xFF)]) end
     return bit32.bxor(crc, 0xFFFFFFFF)
 end
-
 local function buildZip(files)
-    local localHeaders = {}
-    local centralEntries = {}
-    local offset = 0
-    for _, file in ipairs(files) do
-        local name = file.name
-        local data = file.data
-        local c = crc32(data)
-        local size = #data
-        local nameLen = #name
-        local lh = table.concat({
-            "PK\3\4", numToLE2(20), numToLE2(0), numToLE2(0),
-            numToLE2(0), numToLE2(0), numToLE4(c),
-            numToLE4(size), numToLE4(size), numToLE2(nameLen),
-            numToLE2(0), name, data
-        })
-        table.insert(localHeaders, lh)
-        local ce = table.concat({
-            "PK\1\2", numToLE2(20), numToLE2(20), numToLE2(0),
-            numToLE2(0), numToLE2(0), numToLE2(0), numToLE4(c),
-            numToLE4(size), numToLE4(size), numToLE2(nameLen),
-            numToLE2(0), numToLE2(0), numToLE2(0), numToLE2(0),
-            numToLE4(0), numToLE4(offset), name
-        })
-        table.insert(centralEntries, ce)
-        offset = offset + #lh
+    local lh, ce, off = {}, {}, 0
+    for _, f in ipairs(files) do
+        local n, d, c, s = f.name, f.data, crc32(f.data), #f.data
+        local h = "PK\3\4"..numToLE2(20)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE4(c)..numToLE4(s)..numToLE4(s)..numToLE2(#n)..numToLE2(0)..n..d
+        lh[#lh+1] = h
+        ce[#ce+1] = "PK\1\2"..numToLE2(20)..numToLE2(20)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE4(c)..numToLE4(s)..numToLE4(s)..numToLE2(#n)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE2(0)..numToLE4(0)..numToLE4(off)..n
+        off = off + #h
     end
-    local centralDir = table.concat(centralEntries)
-    local centralDirOffset = offset
-    local centralDirSize = #centralDir
-    local eocd = table.concat({
-        "PK\5\6", numToLE2(0), numToLE2(0),
-        numToLE2(#files), numToLE2(#files),
-        numToLE4(centralDirSize), numToLE4(centralDirOffset),
-        numToLE2(0)
-    })
-    return table.concat(localHeaders) .. centralDir .. eocd
-end
-
--- ===================== DECOMPILE ===================== --
-
-local function safeDecompile(script)
-    local ok, source = pcall(function() return decompile(script) end)
-    if ok and source and #source > 0 then return source end
-    local ok2, src2 = pcall(function() return script.Source end)
-    if ok2 and src2 and #src2 > 0 then return src2 end
-    return "-- [Decompile failed for " .. script:GetFullName() .. "]"
-end
-
--- ===================== PATH SANITIZER ===================== --
-
-local function sanitizePath(path)
-    -- Remove trailing spaces from each path segment (the Windows problem)
-    -- "SwordsController .module.lua" -> "SwordsController.module.lua"
-    -- "SwordsController /PRY.module.lua" -> "SwordsController/PRY.module.lua"
-    path = path:gsub(" /", "/")      -- trailing space before /
-    path = path:gsub(" %.", ".")     -- trailing space before .
-    path = path:gsub(" $", "")       -- trailing space at end
-    -- Also remove any double spaces
-    path = path:gsub("  +", " ")
-    return path
-end
-
-local function getScriptPath(script)
-    local path = script:GetFullName():gsub("%.", "/")
-    if script:IsA("LocalScript") then
-        path = path .. ".client.lua"
-    elseif script:IsA("ModuleScript") then
-        path = path .. ".module.lua"
-    else
-        path = path .. ".lua"
-    end
-    return sanitizePath(path)
-end
-
--- ===================== TARGET FINDER ===================== --
-
-local function shouldExtract(script)
-    local fullName = script:GetFullName():lower()
-    local name = script.Name:lower()
-
-    -- Primary targets: SwordsController and children (PRY module)
-    if fullName:find("swordscontroller") then return true end
-
-    -- Net library source (the VM-obfuscated one, re-grab for completeness)
-    if fullName:find("sleitnick_net") then return true end
-
-    -- Any script whose source references parry/block mechanics
-    -- (we check name patterns first, decompile check is done separately)
-    if name:find("parry") then return true end
-    if name:find("pry") and not name:find("encrypt") then return true end
-
-    -- Hotbar-related (Block button chain)
-    if name:find("hotbar") and fullName:find("controller") then return true end
-
-    -- Ball controller/system
-    if name:find("ballcontroller") or name:find("ballindicator") then return true end
-
-    -- Game round/match logic
-    if name:find("roundcontroller") or name:find("matchcontroller") then return true end
-
-    -- Ability system (parry counter is an ability)
-    if name:find("abilitycontroller") then return true end
-
-    -- Anti-cheat (to understand what's monitored)
-    if name:find("anticheat") or name:find("antifling") or name:find("integrity") then return true end
-
-    -- Training mode (simulates parry)
-    if name:find("trainingmode") or name:find("lobbytraining") then return true end
-
-    -- UseBall2 (ball targeting system)
-    if name == "useball2" then return true end
-
-    -- Rhythm LTM (has parry cooldown logic)
-    if name:find("rhythmltm") then return true end
-
-    -- VFX controller (parry effects)
-    if name:find("clientfx") then return true end
-
-    -- ServerInfo
-    if name == "serverinfo" then return true end
-
-    return false
+    local cd = table.concat(ce)
+    return table.concat(lh)..cd.."PK\5\6"..numToLE2(0)..numToLE2(0)..numToLE2(#files)..numToLE2(#files)..numToLE4(#cd)..numToLE4(off)..numToLE2(0)
 end
 
 -- ===================== MAIN ===================== --
@@ -277,427 +171,364 @@ end
 task.spawn(function()
     if typeof(decompile) ~= "function" then
         setStatus("❌ decompile() not available!")
-        notify("ERROR: decompile missing")
         return
     end
 
-    if not _request then
-        setStatus("❌ request/http_request not available!")
-        notify("ERROR: request missing")
+    setStatus("🔍 Finding SwordsController...")
+
+    -- Find the SwordsController module
+    local Controllers = ReplicatedStorage:FindFirstChild("Controllers")
+    if not Controllers then
+        setStatus("❌ ReplicatedStorage.Controllers not found!")
         return
     end
 
-    setStatus("🔍 Phase 1: Scanning all scripts...")
-    setProgress(0)
+    -- Search for SwordsController (with or without trailing space)
+    local swcModule = nil
+    local pryModule = nil
+    local allTargets = {}
 
-    -- Collect ALL scripts
-    local allScripts = {}
-    local seen = {}
-
-    pcall(function()
-        for _, s in ipairs(getscripts()) do
-            if (s:IsA("LocalScript") or s:IsA("ModuleScript")) and not seen[s] then
-                seen[s] = true
-                table.insert(allScripts, s)
+    for _, child in ipairs(Controllers:GetChildren()) do
+        -- Check name with/without trailing spaces
+        local cleanName = child.Name:gsub("%s+$", "")
+        if cleanName == "SwordsController" then
+            if child:IsA("ModuleScript") then
+                swcModule = child
+                table.insert(allTargets, {script = child, label = "SwordsController (main)"})
+            end
+            -- Check children (PRY module)
+            for _, sub in ipairs(child:GetDescendants()) do
+                if sub:IsA("ModuleScript") or sub:IsA("LocalScript") then
+                    table.insert(allTargets, {script = sub, label = "SwordsController/" .. sub.Name})
+                    if sub.Name:upper():find("PRY") then
+                        pryModule = sub
+                    end
+                end
             end
         end
-    end)
+    end
 
-    -- Also scan key locations manually
-    local locations = {
-        game:GetService("ReplicatedStorage"),
-        game:GetService("ReplicatedFirst"),
-        game:GetService("StarterPlayer"),
-        game:GetService("StarterGui"),
-        game:GetService("Players").LocalPlayer,
-    }
-    pcall(function() table.insert(locations, workspace) end)
-
-    for _, loc in ipairs(locations) do
+    -- Also search via getscripts() as backup
+    if #allTargets == 0 then
+        setStatus("🔍 Not in Children, trying getscripts()...")
         pcall(function()
-            for _, desc in ipairs(loc:GetDescendants()) do
-                if (desc:IsA("LocalScript") or desc:IsA("ModuleScript")) and not seen[desc] then
-                    seen[desc] = true
-                    table.insert(allScripts, desc)
+            for _, s in ipairs(getscripts()) do
+                local fn = s:GetFullName()
+                if fn:find("SwordsController") then
+                    table.insert(allTargets, {script = s, label = fn:gsub(".*Controllers%.", "")})
+                    if s.Name:upper():find("PRY") then pryModule = s end
+                    if fn:match("SwordsController%s*$") or fn:match("SwordsController%s*%.module") then
+                        swcModule = s
+                    end
                 end
             end
         end)
     end
 
-    setStatus("🔍 Found " .. #allScripts .. " total scripts\n🎯 Filtering targets...")
-    setProgress(0.1)
-    task.wait()
-
-    -- Phase 1: Filter by name/path
-    local targets = {}
-    for _, s in ipairs(allScripts) do
-        if shouldExtract(s) then
-            table.insert(targets, s)
-        end
-    end
-
-    setStatus(
-        "🎯 " .. #targets .. " targeted by name\n" ..
-        "🔧 Phase 2: Decompiling targets..."
-    )
-    setProgress(0.15)
-    task.wait()
-
-    -- Phase 2: Decompile targets
-    local files = {}
-    local decompiled = 0
-    local failed = 0
-
-    for i, script in ipairs(targets) do
-        local path = getScriptPath(script)
-        local ok, source = pcall(safeDecompile, script)
-
-        if ok and source then
-            table.insert(files, {
-                name = path,
-                data = source,
-                size = #source,
-                fullName = script:GetFullName()
-            })
-            decompiled = decompiled + 1
-        else
-            failed = failed + 1
-            table.insert(files, {
-                name = path,
-                data = "-- [DECOMPILE FAILED]\n-- " .. tostring(source),
-                size = 0,
-                fullName = script:GetFullName()
-            })
-        end
-
-        if i % 3 == 0 or i == #targets then
-            setProgress(0.15 + (i / #targets) * 0.35)
-            setStatus(
-                "🔧 Decompiling: " .. i .. "/" .. #targets ..
-                "\n✅ OK: " .. decompiled .. " | ❌ Failed: " .. failed ..
-                "\n📄 " .. path:sub(1, 55)
-            )
-            task.wait()
-        end
-    end
-
-    -- Phase 3: Scan ALL remaining scripts for parry-related source code
-    setStatus(
-        "✅ Targets done: " .. decompiled .. "/" .. #targets ..
-        "\n🔎 Phase 3: Scanning all sources for parry refs..."
-    )
-    setProgress(0.5)
-    task.wait()
-
-    local extraFound = 0
-    local targetPaths = {}
-    for _, f in ipairs(files) do
-        targetPaths[f.fullName] = true
-    end
-
-    for i, script in ipairs(allScripts) do
-        if not targetPaths[script:GetFullName()] then
-            -- Quick decompile + search for parry keywords
-            local ok, source = pcall(safeDecompile, script)
-            if ok and source and #source > 0 then
-                local srcLower = source:lower()
-                -- Only grab scripts that reference core parry mechanics
-                if srcLower:find("block%.activated") or
-                   srcLower:find("swordscontroller") or
-                   srcLower:find("parrycooldown") or
-                   srcLower:find("parrysuccess") or
-                   (srcLower:find("firesignal") and srcLower:find("block")) then
-                    local path = getScriptPath(script)
-                    table.insert(files, {
-                        name = path,
-                        data = source,
-                        size = #source,
-                        fullName = script:GetFullName()
-                    })
-                    extraFound = extraFound + 1
-                    decompiled = decompiled + 1
-                end
+    -- Also find it by scanning ControllerRunners
+    if #allTargets == 0 then
+        setStatus("🔍 Searching ControllerRunners...")
+        pcall(function()
+            local player = game:GetService("Players").LocalPlayer
+            local runners = player.PlayerScripts:FindFirstChild("ClientLoader")
+            if runners then
+                runners = runners:FindFirstChild("ControllerRunners")
             end
-        end
-
-        if i % 50 == 0 then
-            setProgress(0.5 + (i / #allScripts) * 0.15)
-            setStatus(
-                "🔎 Source scanning: " .. i .. "/" .. #allScripts ..
-                "\n🆕 Extra parry-related: " .. extraFound
-            )
-            task.wait()
-        end
-    end
-
-    -- Phase 4: Also dump runtime info
-    setStatus("📊 Phase 4: Dumping runtime parry info...")
-    setProgress(0.65)
-    task.wait()
-
-    -- Dump Block.Activated connection info
-    local runtimeInfo = "-- SwordsController Runtime Analysis\n"
-    runtimeInfo = runtimeInfo .. "-- Generated: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n"
-
-    pcall(function()
-        local Player = game:GetService("Players").LocalPlayer
-        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-        if hotbar then
-            local block = hotbar:FindFirstChild("Block")
-            if block then
-                runtimeInfo = runtimeInfo .. "-- Block button found: " .. block:GetFullName() .. "\n"
-                runtimeInfo = runtimeInfo .. "-- Block.ClassName: " .. block.ClassName .. "\n\n"
-
-                local _gc = getconnections or false
-                local _gi = getinfo or debug.info or false
-                local _gu = getupvalues or debug.getupvalues or false
-                local _gc2 = getconstants or debug.getconstants or false
-
-                if _gc then
-                    local conns = _gc(block.Activated)
-                    runtimeInfo = runtimeInfo .. "-- Block.Activated connections: " .. #conns .. "\n\n"
-
-                    for idx, conn in ipairs(conns) do
-                        runtimeInfo = runtimeInfo .. "-- ========== CONNECTION #" .. idx .. " ==========\n"
-
-                        local fn = nil
-                        pcall(function() fn = conn.Function end)
-                        if not fn then
-                            runtimeInfo = runtimeInfo .. "-- Function: <unavailable>\n\n"
-                        else
-                            runtimeInfo = runtimeInfo .. "-- Function: " .. tostring(fn) .. "\n"
-
-                            -- getinfo
-                            if _gi then
-                                pcall(function()
-                                    local info = _gi(fn)
-                                    runtimeInfo = runtimeInfo .. "-- Source: " .. tostring(info.source or "?") .. "\n"
-                                    runtimeInfo = runtimeInfo .. "-- Name: " .. tostring(info.name or "?") .. "\n"
-                                    runtimeInfo = runtimeInfo .. "-- Line: " .. tostring(info.currentline or info.linedefined or "?") .. "\n"
-                                    runtimeInfo = runtimeInfo .. "-- NumParams: " .. tostring(info.numparams or "?") .. "\n"
-                                    runtimeInfo = runtimeInfo .. "-- IsVarArg: " .. tostring(info.is_vararg or "?") .. "\n"
-                                end)
+            if runners then
+                for _, runner in ipairs(runners:GetChildren()) do
+                    local cleanName = runner.Name:gsub("%s+$", "")
+                    if cleanName == "SwordsController" then
+                        local target = runner:FindFirstChild("Target")
+                        if target and target:IsA("ObjectValue") and target.Value then
+                            local actualModule = target.Value
+                            table.insert(allTargets, {script = actualModule, label = "SwordsController (via runner Target)"})
+                            swcModule = actualModule
+                            for _, sub in ipairs(actualModule:GetDescendants()) do
+                                if sub:IsA("ModuleScript") or sub:IsA("LocalScript") then
+                                    table.insert(allTargets, {script = sub, label = "SwordsController/" .. sub.Name})
+                                    if sub.Name:upper():find("PRY") then pryModule = sub end
+                                end
                             end
-
-                            -- getupvalues (3 levels deep for SwordsController)
-                            if _gu then
-                                pcall(function()
-                                    local uvs1 = _gu(fn)
-                                    runtimeInfo = runtimeInfo .. "-- Upvalues L1: " .. #uvs1 .. " entries\n"
-                                    for k, v in pairs(uvs1) do
-                                        local vStr = tostring(v)
-                                        if #vStr > 100 then vStr = vStr:sub(1, 100) .. "..." end
-                                        runtimeInfo = runtimeInfo .. "--   UV1[" .. tostring(k) .. "] = (" .. typeof(v) .. ") " .. vStr .. "\n"
-                                    end
-
-                                    -- Level 2
-                                    for k, v in pairs(uvs1) do
-                                        if type(v) == "function" then
-                                            pcall(function()
-                                                local uvs2 = _gu(v)
-                                                runtimeInfo = runtimeInfo .. "-- Upvalues L2 (from UV1[" .. k .. "]): " .. #uvs2 .. " entries\n"
-                                                for k2, v2 in pairs(uvs2) do
-                                                    local vStr2 = tostring(v2)
-                                                    if #vStr2 > 100 then vStr2 = vStr2:sub(1, 100) .. "..." end
-                                                    runtimeInfo = runtimeInfo .. "--   UV2[" .. tostring(k2) .. "] = (" .. typeof(v2) .. ") " .. vStr2 .. "\n"
-                                                end
-
-                                                -- Level 3
-                                                for k2, v2 in pairs(uvs2) do
-                                                    if type(v2) == "function" then
-                                                        pcall(function()
-                                                            local uvs3 = _gu(v2)
-                                                            runtimeInfo = runtimeInfo .. "-- Upvalues L3 (from UV2[" .. k2 .. "]): " .. #uvs3 .. " entries\n"
-                                                            for k3, v3 in pairs(uvs3) do
-                                                                local vStr3 = tostring(v3)
-                                                                if #vStr3 > 200 then vStr3 = vStr3:sub(1, 200) .. "..." end
-                                                                runtimeInfo = runtimeInfo .. "--   UV3[" .. tostring(k3) .. "] = (" .. typeof(v3) .. ") " .. vStr3 .. "\n"
-                                                            end
-                                                        end)
-                                                    end
-                                                end
-                                            end)
-                                        end
-                                    end
-                                end)
-                            end
-
-                            -- getconstants
-                            if _gc2 then
-                                pcall(function()
-                                    local consts = _gc2(fn)
-                                    runtimeInfo = runtimeInfo .. "-- Constants: " .. #consts .. " entries\n"
-                                    for k, v in pairs(consts) do
-                                        runtimeInfo = runtimeInfo .. "--   C[" .. tostring(k) .. "] = (" .. typeof(v) .. ") " .. tostring(v) .. "\n"
-                                    end
-                                end)
-                            end
-
-                            runtimeInfo = runtimeInfo .. "\n"
                         end
                     end
-                else
-                    runtimeInfo = runtimeInfo .. "-- getconnections not available\n"
-                end
-            else
-                runtimeInfo = runtimeInfo .. "-- Block button NOT found in Hotbar\n"
-            end
-        else
-            runtimeInfo = runtimeInfo .. "-- Hotbar NOT found in PlayerGui\n"
-        end
-    end)
-
-    -- Dump Net remotes info
-    runtimeInfo = runtimeInfo .. "\n-- ========== NET REMOTES ==========\n"
-    pcall(function()
-        for _, child in ipairs(game:GetService("ReplicatedStorage"):GetChildren()) do
-            if child.Name:sub(1, 3) == "RE/" or child.Name:sub(1, 3) == "RF/" then
-                runtimeInfo = runtimeInfo .. "-- " .. child.ClassName .. ": " .. child.Name .. "\n"
-            end
-        end
-    end)
-
-    -- Dump Remotes folder
-    runtimeInfo = runtimeInfo .. "\n-- ========== REMOTES FOLDER ==========\n"
-    pcall(function()
-        local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
-        if remotes then
-            for _, r in ipairs(remotes:GetDescendants()) do
-                if r:IsA("RemoteEvent") or r:IsA("RemoteFunction") or r:IsA("BindableEvent") then
-                    runtimeInfo = runtimeInfo .. "-- " .. r.ClassName .. ": " .. r:GetFullName() .. "\n"
                 end
             end
-        end
-    end)
-
-    table.insert(files, {
-        name = "_RUNTIME_ANALYSIS.lua",
-        data = runtimeInfo,
-        size = #runtimeInfo,
-        fullName = "_runtime"
-    })
-
-    -- Build index
-    local indexContent = "-- SwordsController Targeted Dump\n"
-    indexContent = indexContent .. "-- Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-    indexContent = indexContent .. "-- Total files: " .. #files .. "\n"
-    indexContent = indexContent .. "-- Decompiled: " .. decompiled .. "\n"
-    indexContent = indexContent .. "-- Failed: " .. failed .. "\n"
-    indexContent = indexContent .. "-- Extra parry-refs: " .. extraFound .. "\n\n"
-
-    -- Sort by size (biggest first = most important)
-    table.sort(files, function(a, b) return (a.size or 0) > (b.size or 0) end)
-
-    indexContent = indexContent .. "-- Files (sorted by size, biggest first):\n"
-    for _, f in ipairs(files) do
-        indexContent = indexContent .. "--   " .. f.name .. " (" .. (f.size or #f.data) .. " bytes)\n"
+        end)
     end
-    table.insert(files, 1, {name = "_INDEX.lua", data = indexContent})
+
+    if #allTargets == 0 then
+        setStatus("❌ SwordsController not found anywhere!\nTry clicking Block once first.")
+        return
+    end
 
     setStatus(
-        "✅ Total: " .. #files .. " files\n" ..
-        "📦 Building ZIP..."
+        "✅ Found " .. #allTargets .. " target(s)\n" ..
+        "📄 SWC: " .. (swcModule and swcModule:GetFullName() or "?") .. "\n" ..
+        "📄 PRY: " .. (pryModule and pryModule:GetFullName() or "?") .. "\n" ..
+        "🔧 Decompiling..."
     )
-    setProgress(0.7)
     task.wait()
 
-    -- Build ZIP
-    local zipData = buildZip(files)
+    -- Decompile all targets
+    local results = {} -- {name, source, size}
 
-    setStatus(
-        "✅ ZIP built: " .. math.floor(#zipData / 1024) .. " KB\n" ..
-        "☁️ Getting gofile server..."
-    )
-    setProgress(0.8)
+    for i, target in ipairs(allTargets) do
+        setStatus("🔧 Decompiling " .. i .. "/" .. #allTargets .. ": " .. target.label)
+        task.wait()
 
-    -- Save locally
-    pcall(function()
-        writefile("SwordsController_Dump.zip", zipData)
-        setStatus(StatusLabel.Text .. "\n💾 Saved locally too")
-    end)
+        local ok, source = pcall(function() return decompile(target.script) end)
+        if not ok or not source or #source == 0 then
+            pcall(function() source = target.script.Source end)
+        end
+        if not source or #source == 0 then
+            source = "-- [DECOMPILE FAILED for " .. target.script:GetFullName() .. "]"
+        end
 
-    -- Upload to gofile
-    local serverName = nil
-    local ok1, res1 = pcall(function()
-        return _request({
-            Url = "https://api.gofile.io/servers",
-            Method = "GET"
+        local cleanName = target.label:gsub("%s+/", "/"):gsub("%s+%.", "."):gsub("%s+$", "")
+        table.insert(results, {
+            name = cleanName,
+            source = source,
+            size = #source
         })
-    end)
-    if ok1 and res1 and res1.Body then
-        pcall(function()
-            local data = HttpService:JSONDecode(res1.Body)
-            if data and data.data and data.data.servers then
-                for _, srv in ipairs(data.data.servers) do
-                    serverName = srv.name
-                    break
+    end
+
+    -- Also add runtime deep scan of Connection #3
+    local runtimeDump = "-- ===== RUNTIME: Connection #3 Deep Scan =====\n\n"
+    pcall(function()
+        local _gc = getconnections
+        local _gi = getinfo or debug.info
+        local _gu = getupvalues or debug.getupvalues
+        local _gc2 = getconstants or debug.getconstants
+        local _gp = getprotos or debug.getprotos
+
+        local block = game:GetService("Players").LocalPlayer.PlayerGui.Hotbar.Block
+        local conns = _gc(block.Activated)
+
+        for idx, conn in ipairs(conns) do
+            local fn = nil
+            pcall(function() fn = conn.Function end)
+            if not fn then continue end
+            local ok, info = pcall(_gi, fn)
+            if not ok or not info then continue end
+            if not tostring(info.source or ""):find("SwordsController") then continue end
+
+            runtimeDump = runtimeDump .. "-- Found SwordsController handler (conn #" .. idx .. ")\n"
+            runtimeDump = runtimeDump .. "-- Source: " .. tostring(info.source) .. "\n"
+            runtimeDump = runtimeDump .. "-- Line: " .. tostring(info.currentline or info.linedefined) .. "\n\n"
+
+            -- Deep upvalue walk (5 levels)
+            local function dumpUpvalues(f, prefix, depth)
+                if depth > 5 then return end
+                local ok2, uvs = pcall(_gu, f)
+                if not ok2 or not uvs then return end
+                for k, v in pairs(uvs) do
+                    local vt = typeof(v)
+                    local vs = tostring(v)
+                    if #vs > 200 then vs = vs:sub(1, 200) .. "..." end
+                    runtimeDump = runtimeDump .. prefix .. "UV[" .. k .. "] = (" .. vt .. ") " .. vs .. "\n"
+
+                    -- If it's a table, dump its string keys
+                    if type(v) == "table" and depth <= 3 then
+                        local count = 0
+                        for tk, tv in pairs(v) do
+                            if count > 30 then
+                                runtimeDump = runtimeDump .. prefix .. "  ... (truncated)\n"
+                                break
+                            end
+                            if type(tk) == "string" then
+                                runtimeDump = runtimeDump .. prefix .. "  ." .. tk .. " = (" .. typeof(tv) .. ") " .. tostring(tv):sub(1,120) .. "\n"
+                            elseif type(tk) == "number" then
+                                runtimeDump = runtimeDump .. prefix .. "  [" .. tk .. "] = (" .. typeof(tv) .. ") " .. tostring(tv):sub(1,120) .. "\n"
+                            end
+                            count = count + 1
+                        end
+                    end
+
+                    -- Recurse into functions
+                    if type(v) == "function" then
+                        -- Get constants of this function
+                        if _gc2 then
+                            pcall(function()
+                                local consts = _gc2(v)
+                                if consts and #consts > 0 then
+                                    runtimeDump = runtimeDump .. prefix .. "  CONSTANTS:\n"
+                                    for ck, cv in pairs(consts) do
+                                        runtimeDump = runtimeDump .. prefix .. "    C[" .. ck .. "] = (" .. typeof(cv) .. ") " .. tostring(cv) .. "\n"
+                                    end
+                                end
+                            end)
+                        end
+                        -- Get info
+                        if _gi then
+                            pcall(function()
+                                local fi = _gi(v)
+                                if fi then
+                                    runtimeDump = runtimeDump .. prefix .. "  INFO: src=" .. tostring(fi.source) .. " line=" .. tostring(fi.currentline or fi.linedefined) .. "\n"
+                                end
+                            end)
+                        end
+                        -- Recurse
+                        dumpUpvalues(v, prefix .. "  ", depth + 1)
+                    end
                 end
             end
-        end)
-    end
-    if not serverName then serverName = "store1" end
 
-    setStatus(
-        "✅ ZIP: " .. math.floor(#zipData / 1024) .. " KB\n" ..
-        "☁️ Uploading to " .. serverName .. ".gofile.io..."
-    )
-    setProgress(0.9)
+            runtimeDump = runtimeDump .. "-- === Upvalue tree ===\n"
+            dumpUpvalues(fn, "-- ", 0)
+            runtimeDump = runtimeDump .. "\n"
 
-    local boundary = "----SWCDump" .. tostring(math.random(100000, 999999))
-    local fileName = "SwordsController_Dump_" .. os.date("%Y%m%d_%H%M%S") .. ".zip"
+            -- Also dump constants of the handler itself
+            if _gc2 then
+                pcall(function()
+                    local consts = _gc2(fn)
+                    runtimeDump = runtimeDump .. "-- Handler constants: " .. #consts .. "\n"
+                    for k, v in pairs(consts) do
+                        runtimeDump = runtimeDump .. "--   C[" .. k .. "] = (" .. typeof(v) .. ") " .. tostring(v) .. "\n"
+                    end
+                end)
+            end
 
-    local multipartBody = table.concat({
-        "--" .. boundary .. "\r\n",
-        'Content-Disposition: form-data; name="file"; filename="' .. fileName .. '"\r\n',
-        "Content-Type: application/zip\r\n",
-        "\r\n",
-        zipData,
-        "\r\n",
-        "--" .. boundary .. "--\r\n"
-    })
+            -- Get protos (sub-functions)
+            if _gp then
+                pcall(function()
+                    local protos = _gp(fn)
+                    runtimeDump = runtimeDump .. "\n-- Handler protos: " .. #protos .. "\n"
+                    for pi, pf in ipairs(protos) do
+                        runtimeDump = runtimeDump .. "--   Proto[" .. pi .. "]: " .. tostring(pf) .. "\n"
+                        if _gc2 then
+                            pcall(function()
+                                local pc = _gc2(pf)
+                                for pk, pv in pairs(pc) do
+                                    runtimeDump = runtimeDump .. "--     C[" .. pk .. "] = (" .. typeof(pv) .. ") " .. tostring(pv) .. "\n"
+                                end
+                            end)
+                        end
+                    end
+                end)
+            end
 
-    local ok3, res3 = pcall(function()
-        return _request({
-            Url = "https://" .. serverName .. ".gofile.io/contents/uploadfile",
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "multipart/form-data; boundary=" .. boundary
-            },
-            Body = multipartBody
-        })
+            break -- Only need connection #3
+        end
     end)
 
-    setProgress(1)
+    table.insert(results, {
+        name = "_RUNTIME_DEEP_SCAN",
+        source = runtimeDump,
+        size = #runtimeDump
+    })
 
-    if ok3 and res3 and res3.Body then
-        local ok4, uploadData = pcall(function()
-            return HttpService:JSONDecode(res3.Body)
-        end)
-        if ok4 and uploadData and uploadData.status == "ok" and uploadData.data then
-            local link = uploadData.data.downloadPage or ("https://gofile.io/d/" .. (uploadData.data.code or uploadData.data.fileId or "?"))
-            setStatus(
-                "✅ UPLOAD DONE!\n\n" ..
-                "📦 " .. #files .. " files (" .. math.floor(#zipData / 1024) .. " KB)\n" ..
-                "⚔️ SwordsController + PRY + parry refs\n" ..
-                "🔗 " .. link
-            )
-            LinkLabel.Text = "  📋 " .. link .. "  (click to copy)"
-            LinkLabel.Visible = true
-            LinkLabel.MouseButton1Click:Connect(function()
-                pcall(function()
-                    setclipboard(link)
-                    LinkLabel.Text = "  ✅ Copied!"
-                    notify("Link copied!")
-                    task.delay(2, function() LinkLabel.Text = "  📋 " .. link end)
-                end)
-            end)
-            notify("Upload done! " .. #files .. " files")
-        else
-            setStatus("❌ Upload parse failed\n" .. tostring(res3.Body):sub(1, 200))
-            notify("Upload parse error")
+    -- Sort: biggest first
+    table.sort(results, function(a, b) return a.size > b.size end)
+
+    -- Display first result
+    local currentIdx = 1
+    local function showResult(idx)
+        if idx < 1 or idx > #results then return end
+        currentIdx = idx
+        local r = results[idx]
+        setStatus(
+            "📄 [" .. idx .. "/" .. #results .. "] " .. r.name ..
+            " (" .. r.size .. " bytes)\n" ..
+            "💡 Use buttons below to copy or navigate"
+        )
+        -- Truncate display to avoid lag (show first 50K chars)
+        local display = r.source
+        if #display > 50000 then
+            display = display:sub(1, 50000) .. "\n\n-- [TRUNCATED - full source in clipboard/upload]"
         end
-    else
-        setStatus("❌ Upload request failed\n" .. tostring(res3))
-        notify("Upload failed")
+        SourceLabel.Text = display
     end
+    showResult(1)
+
+    -- Button handlers
+    CopyBtn.MouseButton1Click:Connect(function()
+        pcall(function()
+            setclipboard(results[currentIdx].source)
+            notify("Copied " .. results[currentIdx].name .. " (" .. results[currentIdx].size .. " bytes)")
+            CopyBtn.Text = "✅ Copied!"
+            task.delay(2, function() CopyBtn.Text = "📋 Copy Current" end)
+        end)
+    end)
+
+    NextBtn.MouseButton1Click:Connect(function()
+        local next = currentIdx + 1
+        if next > #results then next = 1 end
+        showResult(next)
+    end)
+
+    UploadBtn.MouseButton1Click:Connect(function()
+        if not _request then
+            notify("request() not available!")
+            return
+        end
+
+        UploadBtn.Text = "☁️ Uploading..."
+
+        task.spawn(function()
+            -- Build ZIP with sanitized names
+            local zipFiles = {}
+            for _, r in ipairs(results) do
+                local fname = r.name:gsub("[^%w%./%-_]", "_")
+                if not fname:find("%.lua$") then
+                    fname = fname .. ".lua"
+                end
+                table.insert(zipFiles, {name = fname, data = r.source})
+            end
+
+            local zipData = buildZip(zipFiles)
+
+            -- Get gofile server
+            local serverName = "store1"
+            pcall(function()
+                local res = _request({Url = "https://api.gofile.io/servers", Method = "GET"})
+                local data = HttpService:JSONDecode(res.Body)
+                if data.data and data.data.servers then
+                    serverName = data.data.servers[1].name
+                end
+            end)
+
+            local boundary = "----SWC" .. tostring(math.random(100000, 999999))
+            local fileName = "SwordsController_Source_" .. os.date("%Y%m%d_%H%M%S") .. ".zip"
+
+            local body = "--" .. boundary .. "\r\n"
+                .. 'Content-Disposition: form-data; name="file"; filename="' .. fileName .. '"\r\n'
+                .. "Content-Type: application/zip\r\n\r\n"
+                .. zipData .. "\r\n--" .. boundary .. "--\r\n"
+
+            local ok, res = pcall(function()
+                return _request({
+                    Url = "https://" .. serverName .. ".gofile.io/contents/uploadfile",
+                    Method = "POST",
+                    Headers = {["Content-Type"] = "multipart/form-data; boundary=" .. boundary},
+                    Body = body
+                })
+            end)
+
+            if ok and res and res.Body then
+                pcall(function()
+                    local data = HttpService:JSONDecode(res.Body)
+                    if data.status == "ok" and data.data then
+                        local link = data.data.downloadPage or ("https://gofile.io/d/" .. (data.data.code or "?"))
+                        UploadBtn.Text = "✅ Uploaded!"
+                        notify("Upload done: " .. link)
+                        setStatus(
+                            "✅ UPLOADED: " .. #zipFiles .. " files\n" ..
+                            "🔗 " .. link .. "\n" ..
+                            "📄 Currently viewing: [" .. currentIdx .. "/" .. #results .. "] " .. results[currentIdx].name
+                        )
+                        pcall(function() setclipboard(link) end)
+                    else
+                        UploadBtn.Text = "❌ Failed"
+                        notify("Upload failed: " .. tostring(data.status))
+                    end
+                end)
+            else
+                UploadBtn.Text = "❌ Error"
+                notify("Upload request failed")
+            end
+            task.delay(3, function() UploadBtn.Text = "☁️ Upload All" end)
+        end)
+    end)
+
+    notify("Ready! " .. #results .. " files decompiled")
 end)
