@@ -92,25 +92,13 @@ local function FindU177()
 end
 
 -- Force u165=false, u163=false so the handler never blocks
--- Also zeros u166 (1.3s cooldown value) for good measure
+-- Just 2 setupvalue calls = nearly free, no scanning
 local function ForceUnlock()
     if not _setupvalue then return end
     local fn = FindU177()
     if not fn then return end
-
     pcall(_setupvalue, fn, 2, false)  -- u165 = false (parrying flag)
     pcall(_setupvalue, fn, 3, false)  -- u163 = false (animation flag)
-
-    -- Also zero any cooldown numbers in range [0.5, 5.0]
-    local uvs = nil
-    pcall(function() uvs = _getupvalues(fn) end)
-    if uvs then
-        for idx, val in pairs(uvs) do
-            if type(val) == "number" and val >= 0.5 and val <= 5.0 then
-                pcall(_setupvalue, fn, idx, 0)
-            end
-        end
-    end
 end
 
 local function Setup()
@@ -156,22 +144,22 @@ local function StartSpam()
 
     ForceUnlock()
 
-    -- ForceUnlock runs EVERY frame (keeps flags at false no matter what)
-    -- Fire capped at 60/sec — adapts down if FPS is lower
-    -- Above 60fps: unlock still runs every frame, fire skips excess frames
+    -- ForceUnlock EVERY frame (2 setupvalue calls = near-zero cost)
+    -- Fire only at 30/sec — each fire runs PRY VM + sound + analytics = heavy
+    -- 30/sec = one attempt every 33ms = never misses a parry window (min 550ms)
     local lastFire = 0
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
         ForceUnlock()
         local now = tick()
-        if now - lastFire >= 0.016 then -- ~60/sec cap
+        if now - lastFire >= 0.033 then
             lastFire = now
             pcall(fireFn)
         end
     end)
 
-    -- Instant re-fire on parry success: don't wait for next Heartbeat
-    -- When server confirms parry, u165/u163 are already false → fire immediately
+    -- Instant re-fire on parry success: skip the 33ms wait
+    -- Server confirms parry → fire IMMEDIATELY for back-to-back parries
     local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
     local parryRemote = remotes and remotes:FindFirstChild("ParrySuccess")
     if parryRemote then
@@ -179,6 +167,7 @@ local function StartSpam()
             if not SpamEnabled or spamSession ~= mySession then return end
             ForceUnlock()
             pcall(fireFn)
+            lastFire = tick()
         end)
     end
 end
