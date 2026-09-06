@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.0.3'
+local MSP_VERSION = '1.0.4'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -141,6 +141,57 @@ local function MuteClickSound()
     end)
 end
 
+-- ===================== BYPASS TESTS ===================== --
+-- Change these to true ONE AT A TIME, test in-game, see which causes kick
+-- Once we know what's safe, we keep only the safe ones
+
+local BYPASS_CONN1 = true   -- TEST A: Disable Connection #1 (ClickSFX / Sound:Play)
+local BYPASS_CONN2 = false  -- TEST B: Disable Connection #2 (Analytics)
+-- (Connection #3 = SwordsController = NEVER touch, it's the parry)
+
+local _disabledConns = {}
+
+local function TryBypassConnections()
+    pcall(function()
+        if not _getconnections then return end
+        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
+        if not hotbar then return end
+        local block = hotbar:FindFirstChild("Block")
+        if not block then return end
+
+        local conns = _getconnections(block.Activated)
+
+        for idx, conn in ipairs(conns) do
+            -- Identify which connection this is
+            local fn = nil
+            pcall(function() fn = conn.Function end)
+            if not fn then continue end
+
+            local info = nil
+            pcall(function() info = _getinfo(fn) end)
+            local isSwords = info and info.source and tostring(info.source):find("SwordsController")
+
+            if isSwords then
+                -- Connection #3 — NEVER touch
+                continue
+            end
+
+            -- Try to identify #1 vs #2 by index or content
+            local connIdx = idx  -- #1=ClickSFX, #2=Analytics typically
+
+            if connIdx == 1 and BYPASS_CONN1 then
+                pcall(function() conn:Disable() end)
+                _disabledConns[#_disabledConns + 1] = conn
+                warn("[MSP] Conn #1 (ClickSFX) DISABLED")
+            elseif connIdx == 2 and BYPASS_CONN2 then
+                pcall(function() conn:Disable() end)
+                _disabledConns[#_disabledConns + 1] = conn
+                warn("[MSP] Conn #2 (Analytics) DISABLED")
+            end
+        end
+    end)
+end
+
 local function Setup()
     _cachedU177 = nil
     _cachedParryFn = nil
@@ -151,6 +202,7 @@ local function Setup()
     activatedSignal = block.Activated
     FindU177()
     MuteClickSound()
+    TryBypassConnections()
     ForceUnlock()
 end
 
