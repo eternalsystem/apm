@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.0.4'
+local MSP_VERSION = '1.1.0'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -51,12 +51,48 @@ local _getinfo = typeof(getinfo) == "function" and getinfo or (typeof(debug) == 
 local _getupvalues = typeof(getupvalues) == "function" and getupvalues or (typeof(debug) == "table" and typeof(debug.getupvalues) == "function" and debug.getupvalues) or nil
 local _setupvalue = typeof(setupvalue) == "function" and setupvalue or (typeof(debug) == "table" and typeof(debug.setupvalue) == "function" and debug.setupvalue) or nil
 
--- Cached references:
---   _cachedU177: the inner parry handler for ForceUnlock (setupvalue target)
---   _cachedParryFn: Connection #3's direct function (called instead of firesignal)
--- u177 upvalues: [1]=u162(stunned) [2]=u165(parrying) [3]=u163(animating) ... [12]=u166(1.3s)
+-- ===================== REMOTE CAPTURE ===================== --
+-- Hook __namecall to intercept PRY's FireServer call
+-- On first real parry: capture the remote + encrypted args
+-- Then spam via direct remote:FireServer = near zero FPS cost
+
+local _parryRemote = nil     -- the RemoteEvent PRY fires
+local _parryArgs = nil        -- last captured encrypted args
+local _hookInstalled = false
+local _remoteCaptured = false
+
+local _hookmetamethod = typeof(hookmetamethod) == "function" and hookmetamethod or nil
+local _newcclosure = typeof(newcclosure) == "function" and newcclosure or nil
+
+if _hookmetamethod and _newcclosure then
+    local Remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+
+    pcall(function()
+        local oldNamecall
+        oldNamecall = _hookmetamethod(game, "__namecall", _newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+
+            -- Intercept FireServer calls to Remotes children
+            if method == "FireServer" and typeof(self) == "Instance"
+                and self:IsA("RemoteEvent") and self.Parent == Remotes then
+
+                -- Skip ParrySuccess (that's server→client, not what we want)
+                if self.Name ~= "ParrySuccess" then
+                    _parryRemote = self
+                    _parryArgs = {...}
+                    _remoteCaptured = true
+                end
+            end
+
+            return oldNamecall(self, ...)
+        end))
+        _hookInstalled = true
+    end)
+end
+
+-- ===================== FORCEUNLOCK (for primer only) ===================== --
+
 local _cachedU177 = nil
-local _cachedParryFn = nil
 
 local function FindU177()
     if _cachedU177 then return _cachedU177 end
@@ -77,10 +113,6 @@ local function FindU177()
             pcall(function() info = _getinfo(fn) end)
             if not info or not info.source or not tostring(info.source):find("SwordsController") then continue end
 
-            -- Cache the direct function — skip firesignal overhead entirely
-            _cachedParryFn = fn
-
-            -- Conn#3 fn → UV[1] (wrapper) → UV[2] (u177)
             local uvs1 = nil
             pcall(function() uvs1 = _getupvalues(fn) end)
             if not uvs1 or type(uvs1[1]) ~= "function" then return nil end
@@ -89,131 +121,49 @@ local function FindU177()
             pcall(function() uvs2 = _getupvalues(uvs1[1]) end)
             if not uvs2 or type(uvs2[2]) ~= "function" then return nil end
 
-            return uvs2[2] -- u177
+            return uvs2[2]
         end
         return nil
     end)
 
-    if ok and result then
-        _cachedU177 = result
-    end
+    if ok and result then _cachedU177 = result end
     return _cachedU177
 end
 
--- ForceUnlock: u163 always + u165 based on ParryPower slider
--- Power 10 = u165 every call (30 PRY/sec, heavy)
--- Power  5 = u165 every 165ms (~6 PRY/sec, medium)
--- Power  1 = u165 every 300ms (~3 PRY/sec, light)
-local _lastU165Force = 0
 local function ForceUnlock()
     if not _setupvalue then return end
     local fn = FindU177()
     if not fn then return end
-    pcall(_setupvalue, fn, 3, false)  -- u163 = false (always)
-    if ParryPower >= 10 then
-        pcall(_setupvalue, fn, 2, false)  -- u165 every call
-    else
-        local interval = (10 - ParryPower) * 0.033  -- 9→33ms, 5→165ms, 1→297ms
-        local now = tick()
-        if now - _lastU165Force >= interval then
-            _lastU165Force = now
-            pcall(_setupvalue, fn, 2, false)
-        end
-    end
-end
-
--- Mute the click sound so firesignal doesn't spam audio
--- We MUST use firesignal (direct call = kick, PRY checks debug.info stack)
--- But we can silence Connection #1's Sound:Play overhead
-local function MuteClickSound()
-    pcall(function()
-        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-        if not hotbar then return end
-        local block = hotbar:FindFirstChild("Block")
-        if not block then return end
-        for _, desc in ipairs(block:GetDescendants()) do
-            if desc:IsA("Sound") then
-                desc.Volume = 0
-                desc.SoundId = ""   -- empty SoundId = Play() becomes instant no-op
-                desc.PlayOnRemove = false
-            end
-        end
-    end)
-end
-
--- ===================== BYPASS TESTS ===================== --
--- Change these to true ONE AT A TIME, test in-game, see which causes kick
--- Once we know what's safe, we keep only the safe ones
-
-local BYPASS_CONN1 = true   -- TEST A: Disable Connection #1 (ClickSFX / Sound:Play)
-local BYPASS_CONN2 = false  -- TEST B: Disable Connection #2 (Analytics)
--- (Connection #3 = SwordsController = NEVER touch, it's the parry)
-
-local _disabledConns = {}
-
-local function TryBypassConnections()
-    pcall(function()
-        if not _getconnections then return end
-        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-        if not hotbar then return end
-        local block = hotbar:FindFirstChild("Block")
-        if not block then return end
-
-        local conns = _getconnections(block.Activated)
-
-        for idx, conn in ipairs(conns) do
-            -- Identify which connection this is
-            local fn = nil
-            pcall(function() fn = conn.Function end)
-            if not fn then continue end
-
-            local info = nil
-            pcall(function() info = _getinfo(fn) end)
-            local isSwords = info and info.source and tostring(info.source):find("SwordsController")
-
-            if isSwords then
-                -- Connection #3 — NEVER touch
-                continue
-            end
-
-            -- Try to identify #1 vs #2 by index or content
-            local connIdx = idx  -- #1=ClickSFX, #2=Analytics typically
-
-            if connIdx == 1 and BYPASS_CONN1 then
-                pcall(function() conn:Disable() end)
-                _disabledConns[#_disabledConns + 1] = conn
-                warn("[MSP] Conn #1 (ClickSFX) DISABLED")
-            elseif connIdx == 2 and BYPASS_CONN2 then
-                pcall(function() conn:Disable() end)
-                _disabledConns[#_disabledConns + 1] = conn
-                warn("[MSP] Conn #2 (Analytics) DISABLED")
-            end
-        end
-    end)
+    pcall(_setupvalue, fn, 2, false)  -- u165
+    pcall(_setupvalue, fn, 3, false)  -- u163
 end
 
 local function Setup()
     _cachedU177 = nil
-    _cachedParryFn = nil
     local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
     if not hotbar then return end
     local block = hotbar:FindFirstChild("Block")
     if not block then return end
     activatedSignal = block.Activated
     FindU177()
-    MuteClickSound()
-    TryBypassConnections()
-    ForceUnlock()
 end
 
 Setup()
 
 -- ===================== PARRY FIRE ===================== --
 
--- firesignal ONLY — direct function call triggers PRY's debug.info stack check = kick
-local function ParrySignal()
-    if activatedSignal then
-        firesignal(activatedSignal)
+-- Two modes:
+-- 1) PRIMER: firesignal (triggers PRY → FireServer → hook captures remote+args)
+-- 2) SPAM:   direct remote:FireServer(args) — near zero FPS cost
+local function PrimerFire()
+    if not activatedSignal then return end
+    ForceUnlock()
+    firesignal(activatedSignal)
+end
+
+local function DirectFire()
+    if _parryRemote and _parryArgs then
+        _parryRemote:FireServer(unpack(_parryArgs))
     end
 end
 
@@ -236,44 +186,71 @@ local function StartSpam()
     SpamEnabled = true
     spamSession = spamSession + 1
     local mySession = spamSession
-    local fireFn = ParrySignal
 
-    ForceUnlock()
-
-    -- OPTIMIZED triple-fire: 180 fires/sec but only ~60 PRY/sec
-    -- ForceUnlock ONLY in Heartbeat (1x per frame) — the expensive part
-    -- RenderStepped + Stepped fire WITHOUT ForceUnlock — they bounce at u165 = nearly free
-    --   EXCEPT when u165 is naturally false (after 0.625s clear or ParrySuccess) → bonus PRY
-    -- Result: same 180 fires/sec coverage, 3x less PRY VM load
-    -- Power slider still controls how often u165 is forced in the Heartbeat handler
-
-    -- 1) RenderStepped — fire only, no unlock (cheap bounce or bonus catch)
-    spamConns[1] = RunService.RenderStepped:Connect(function()
-        if not SpamEnabled or spamSession ~= mySession then return end
-        pcall(fireFn)
-    end)
-
-    -- 2) Stepped — fire only, no unlock (cheap bounce or bonus catch)
-    spamConns[2] = RunService.Stepped:Connect(function()
-        if not SpamEnabled or spamSession ~= mySession then return end
-        pcall(fireFn)
-    end)
-
-    -- 3) Heartbeat — ForceUnlock + fire (the ONE that guarantees PRY per frame)
-    spamConns[3] = RunService.Heartbeat:Connect(function()
-        if not SpamEnabled or spamSession ~= mySession then return end
+    -- PHASE 1: Primer — one firesignal to trigger PRY → hook captures remote
+    -- Only needed if remote not captured yet
+    if not _remoteCaptured then
         ForceUnlock()
-        pcall(fireFn)
+        pcall(PrimerFire)
+        task.wait(0.1)  -- give hook time to capture
+    end
+
+    -- Periodic primer to refresh encrypted args (every 3 sec)
+    -- PRY regenerates the time-based XOR key, hook captures fresh args
+    local lastPrimer = tick()
+
+    -- PHASE 2: High-speed spam via direct remote — near zero FPS cost
+    -- Power slider controls fire rate:
+    --   10 = every frame (3x) = ~180/sec
+    --   5  = Heartbeat only = ~60/sec
+    --   1  = every 3rd frame = ~20/sec
+
+    -- Main fire loop — Heartbeat (always active)
+    spamConns[1] = RunService.Heartbeat:Connect(function()
+        if not SpamEnabled or spamSession ~= mySession then return end
+
+        -- Periodic primer refresh (1 firesignal every 3 sec = negligible FPS cost)
+        local now = tick()
+        if now - lastPrimer >= 3 then
+            lastPrimer = now
+            ForceUnlock()
+            pcall(PrimerFire)
+        end
+
+        -- Direct remote fire — almost free
+        if _remoteCaptured then
+            pcall(DirectFire)
+        else
+            -- Fallback: firesignal until remote is captured
+            ForceUnlock()
+            pcall(PrimerFire)
+        end
     end)
 
-    -- ParrySuccess → instant re-fire (don't wait for next frame)
+    -- Extra fire points for higher Power
+    if ParryPower >= 5 then
+        spamConns[2] = RunService.RenderStepped:Connect(function()
+            if not SpamEnabled or spamSession ~= mySession then return end
+            if _remoteCaptured then pcall(DirectFire) end
+        end)
+    end
+
+    if ParryPower >= 8 then
+        spamConns[3] = RunService.Stepped:Connect(function()
+            if not SpamEnabled or spamSession ~= mySession then return end
+            if _remoteCaptured then pcall(DirectFire) end
+        end)
+    end
+
+    -- ParrySuccess → instant re-fire
     local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
     local parryRemote = remotes and remotes:FindFirstChild("ParrySuccess")
     if parryRemote then
         spamConns[4] = parryRemote.OnClientEvent:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
-            ForceUnlock()
-            pcall(fireFn)
+            if _remoteCaptured then
+                pcall(DirectFire)
+            end
         end)
     end
 end
