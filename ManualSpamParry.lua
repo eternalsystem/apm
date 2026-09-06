@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.0.0'
+local MSP_VERSION = '1.0.1'
 
 repeat task.wait() until game:IsLoaded()
 
