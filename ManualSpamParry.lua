@@ -812,7 +812,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
         end
     end
 end)
-
+ 
 UserInputService.InputEnded:Connect(function(input)
     if ActivateMode == 'Hold' and InputMatchesBind(input, ActivateBind) then
         if SpamEnabled then
