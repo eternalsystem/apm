@@ -51,9 +51,12 @@ local _getinfo = typeof(getinfo) == "function" and getinfo or (typeof(debug) == 
 local _getupvalues = typeof(getupvalues) == "function" and getupvalues or (typeof(debug) == "table" and typeof(debug.getupvalues) == "function" and debug.getupvalues) or nil
 local _setupvalue = typeof(setupvalue) == "function" and setupvalue or (typeof(debug) == "table" and typeof(debug.setupvalue) == "function" and debug.setupvalue) or nil
 
--- Cached reference to u177 (the inner parry handler function)
+-- Cached references:
+--   _cachedU177: the inner parry handler for ForceUnlock (setupvalue target)
+--   _cachedParryFn: Connection #3's direct function (called instead of firesignal)
 -- u177 upvalues: [1]=u162(stunned) [2]=u165(parrying) [3]=u163(animating) ... [12]=u166(1.3s)
 local _cachedU177 = nil
+local _cachedParryFn = nil
 
 local function FindU177()
     if _cachedU177 then return _cachedU177 end
@@ -73,6 +76,9 @@ local function FindU177()
             local info = nil
             pcall(function() info = _getinfo(fn) end)
             if not info or not info.source or not tostring(info.source):find("SwordsController") then continue end
+
+            -- Cache the direct function — skip firesignal overhead entirely
+            _cachedParryFn = fn
 
             -- Conn#3 fn → UV[1] (wrapper) → UV[2] (u177)
             local uvs1 = nil
@@ -116,30 +122,15 @@ local function ForceUnlock()
     end
 end
 
--- Mute the click sound so firesignal doesn't spam audio
--- Handler #1 (ClickSFX) still runs (can't disconnect = kick), but sound is silent
-local function MuteClickSound()
-    pcall(function()
-        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-        if not hotbar then return end
-        local block = hotbar:FindFirstChild("Block")
-        if not block then return end
-        for _, desc in block:GetDescendants() do
-            if desc:IsA("Sound") then
-                desc.Volume = 0
-            end
-        end
-    end)
-end
-
 local function Setup()
     _cachedU177 = nil
+    _cachedParryFn = nil
     local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
     if not hotbar then return end
     local block = hotbar:FindFirstChild("Block")
     if not block then return end
     activatedSignal = block.Activated
-    MuteClickSound()
+    FindU177()  -- caches both _cachedU177 and _cachedParryFn
     ForceUnlock()
 end
 
@@ -147,9 +138,16 @@ Setup()
 
 -- ===================== PARRY FIRE ===================== --
 
+-- Direct call to Connection #3 (SwordsController) — bypasses:
+--   • firesignal dispatch overhead
+--   • Connection #1 (ClickSFX Sound:Play) — 0 cost instead of Sound overhead
+--   • Connection #2 (Analytics) — 0 cost instead of data send
+-- Result: ~66% less work per fire at same parry throughput
 local function ParrySignal()
-    if activatedSignal then
-        firesignal(activatedSignal)
+    if _cachedParryFn then
+        _cachedParryFn()
+    elseif activatedSignal then
+        firesignal(activatedSignal)  -- fallback if direct cache failed
     end
 end
 
