@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.1.0'
+local MSP_VERSION = '1.2.0'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -43,45 +43,36 @@ local C = {
     black      = Color3.fromRGB(0, 0, 0),
 }
 
--- ===================== PARRY ENGINE ===================== --
+-- ===================== REMOTE CAPTURE ENGINE ===================== --
+-- Pure remote replay — zero firesignal, zero ForceUnlock, zero PRY VM
+-- Step 1: Hook __namecall to capture parry remote + args on first manual parry
+-- Step 2: Spam remote:FireServer(args) directly = near zero FPS cost
 
-local activatedSignal = nil
-local _getconnections = typeof(getconnections) == "function" and getconnections or nil
-local _getinfo = typeof(getinfo) == "function" and getinfo or (typeof(debug) == "table" and typeof(debug.getinfo) == "function" and debug.getinfo) or nil
-local _getupvalues = typeof(getupvalues) == "function" and getupvalues or (typeof(debug) == "table" and typeof(debug.getupvalues) == "function" and debug.getupvalues) or nil
-local _setupvalue = typeof(setupvalue) == "function" and setupvalue or (typeof(debug) == "table" and typeof(debug.setupvalue) == "function" and debug.setupvalue) or nil
-
--- ===================== REMOTE CAPTURE ===================== --
--- Hook __namecall to intercept PRY's FireServer call
--- On first real parry: capture the remote + encrypted args
--- Then spam via direct remote:FireServer = near zero FPS cost
-
-local _parryRemote = nil     -- the RemoteEvent PRY fires
-local _parryArgs = nil        -- last captured encrypted args
-local _hookInstalled = false
+local _parryRemote = nil
+local _parryArgs = nil
 local _remoteCaptured = false
 
 local _hookmetamethod = typeof(hookmetamethod) == "function" and hookmetamethod or nil
 local _newcclosure = typeof(newcclosure) == "function" and newcclosure or nil
+local _hookInstalled = false
 
+-- Install the __namecall hook at startup
 if _hookmetamethod and _newcclosure then
-    local Remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
-
     pcall(function()
+        local Remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+        if not Remotes then return end
+
         local oldNamecall
         oldNamecall = _hookmetamethod(game, "__namecall", _newcclosure(function(self, ...)
             local method = getnamecallmethod()
 
-            -- Intercept FireServer calls to Remotes children
             if method == "FireServer" and typeof(self) == "Instance"
-                and self:IsA("RemoteEvent") and self.Parent == Remotes then
-
-                -- Skip ParrySuccess (that's server→client, not what we want)
-                if self.Name ~= "ParrySuccess" then
-                    _parryRemote = self
-                    _parryArgs = {...}
-                    _remoteCaptured = true
-                end
+                and self:IsA("RemoteEvent") and self.Parent == Remotes
+                and self.Name ~= "ParrySuccess" then
+                -- Capture the remote and the EXACT args PRY sent (already encrypted)
+                _parryRemote = self
+                _parryArgs = {...}
+                _remoteCaptured = true
             end
 
             return oldNamecall(self, ...)
@@ -90,78 +81,11 @@ if _hookmetamethod and _newcclosure then
     end)
 end
 
--- ===================== FORCEUNLOCK (for primer only) ===================== --
-
-local _cachedU177 = nil
-
-local function FindU177()
-    if _cachedU177 then return _cachedU177 end
-    if not _getconnections or not _getinfo or not _getupvalues then return nil end
-
-    local ok, result = pcall(function()
-        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-        if not hotbar then return nil end
-        local block = hotbar:FindFirstChild("Block")
-        if not block then return nil end
-
-        for _, conn in ipairs(_getconnections(block.Activated)) do
-            local fn = nil
-            pcall(function() fn = conn.Function end)
-            if not fn then continue end
-
-            local info = nil
-            pcall(function() info = _getinfo(fn) end)
-            if not info or not info.source or not tostring(info.source):find("SwordsController") then continue end
-
-            local uvs1 = nil
-            pcall(function() uvs1 = _getupvalues(fn) end)
-            if not uvs1 or type(uvs1[1]) ~= "function" then return nil end
-
-            local uvs2 = nil
-            pcall(function() uvs2 = _getupvalues(uvs1[1]) end)
-            if not uvs2 or type(uvs2[2]) ~= "function" then return nil end
-
-            return uvs2[2]
-        end
-        return nil
-    end)
-
-    if ok and result then _cachedU177 = result end
-    return _cachedU177
-end
-
-local function ForceUnlock()
-    if not _setupvalue then return end
-    local fn = FindU177()
-    if not fn then return end
-    pcall(_setupvalue, fn, 2, false)  -- u165
-    pcall(_setupvalue, fn, 3, false)  -- u163
-end
-
-local function Setup()
-    _cachedU177 = nil
-    local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
-    if not hotbar then return end
-    local block = hotbar:FindFirstChild("Block")
-    if not block then return end
-    activatedSignal = block.Activated
-    FindU177()
-end
-
-Setup()
-
 -- ===================== PARRY FIRE ===================== --
 
--- Two modes:
--- 1) PRIMER: firesignal (triggers PRY → FireServer → hook captures remote+args)
--- 2) SPAM:   direct remote:FireServer(args) — near zero FPS cost
-local function PrimerFire()
-    if not activatedSignal then return end
-    ForceUnlock()
-    firesignal(activatedSignal)
-end
-
-local function DirectFire()
+-- Direct remote fire — no firesignal, no PRY, no Sound, no Analytics
+-- Just the raw remote:FireServer with captured args
+local function DirectParry()
     if _parryRemote and _parryArgs then
         _parryRemote:FireServer(unpack(_parryArgs))
     end
@@ -183,62 +107,39 @@ end
 
 local function StartSpam()
     StopSpam()
+
+    -- Remote not captured yet? User must parry manually first
+    if not _remoteCaptured then
+        warn("[MSP] Remote not captured — do one manual parry first!")
+        return
+    end
+
     SpamEnabled = true
     spamSession = spamSession + 1
     local mySession = spamSession
 
-    -- PHASE 1: Primer — one firesignal to trigger PRY → hook captures remote
-    -- Only needed if remote not captured yet
-    if not _remoteCaptured then
-        ForceUnlock()
-        pcall(PrimerFire)
-        task.wait(0.1)  -- give hook time to capture
-    end
+    -- PURE direct remote spam — ZERO firesignal, ZERO ForceUnlock, ZERO PRY
+    -- Only remote:FireServer(captured args) = near zero FPS cost
 
-    -- Periodic primer to refresh encrypted args (every 3 sec)
-    -- PRY regenerates the time-based XOR key, hook captures fresh args
-    local lastPrimer = tick()
-
-    -- PHASE 2: High-speed spam via direct remote — near zero FPS cost
-    -- Power slider controls fire rate:
-    --   10 = every frame (3x) = ~180/sec
-    --   5  = Heartbeat only = ~60/sec
-    --   1  = every 3rd frame = ~20/sec
-
-    -- Main fire loop — Heartbeat (always active)
+    -- Heartbeat fire (always)
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
-
-        -- Periodic primer refresh (1 firesignal every 3 sec = negligible FPS cost)
-        local now = tick()
-        if now - lastPrimer >= 3 then
-            lastPrimer = now
-            ForceUnlock()
-            pcall(PrimerFire)
-        end
-
-        -- Direct remote fire — almost free
-        if _remoteCaptured then
-            pcall(DirectFire)
-        else
-            -- Fallback: firesignal until remote is captured
-            ForceUnlock()
-            pcall(PrimerFire)
-        end
+        pcall(DirectParry)
     end)
 
-    -- Extra fire points for higher Power
-    if ParryPower >= 5 then
+    -- RenderStepped fire (Power >= 4)
+    if ParryPower >= 4 then
         spamConns[2] = RunService.RenderStepped:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
-            if _remoteCaptured then pcall(DirectFire) end
+            pcall(DirectParry)
         end)
     end
 
-    if ParryPower >= 8 then
+    -- Stepped fire (Power >= 7)
+    if ParryPower >= 7 then
         spamConns[3] = RunService.Stepped:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
-            if _remoteCaptured then pcall(DirectFire) end
+            pcall(DirectParry)
         end)
     end
 
@@ -248,9 +149,7 @@ local function StartSpam()
     if parryRemote then
         spamConns[4] = parryRemote.OnClientEvent:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
-            if _remoteCaptured then
-                pcall(DirectFire)
-            end
+            pcall(DirectParry)
         end)
     end
 end
@@ -650,8 +549,20 @@ end)
 -- ==================== STATUS UPDATE ==================== --
 
 local function UpdateStatus()
-    local label = SpamEnabled and 'ON' or 'OFF'
-    local color = SpamEnabled and C.white or C.textDim
+    local label, color
+    if not _hookInstalled then
+        label = 'NO HOOK'
+        color = Color3.fromRGB(255, 80, 80)
+    elseif not _remoteCaptured then
+        label = 'PARRY 1x'
+        color = Color3.fromRGB(255, 180, 50)
+    elseif SpamEnabled then
+        label = 'ON'
+        color = C.white
+    else
+        label = 'READY'
+        color = Color3.fromRGB(80, 220, 80)
+    end
     StatusLabel.Text = label
     StatusLabel.TextColor3 = color
     AnchorStatus.Text = label
@@ -802,13 +713,19 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- ==================== RESPAWN ==================== --
+-- ==================== REMOTE CAPTURE WATCHER ==================== --
+-- Poll until remote is captured, then update UI
 
-Player.CharacterAdded:Connect(function(char)
-    task.delay(2, function()
-        Setup()
-    end)
+task.spawn(function()
+    while not _remoteCaptured do
+        task.wait(0.5)
+        UpdateStatus()
+    end
+    UpdateStatus()  -- show READY
 end)
+
+-- Initial status
+UpdateStatus()
 
 -- ==================== CLEANUP ==================== --
 
