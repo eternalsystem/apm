@@ -1,7 +1,8 @@
 --[[
-    Manual Spam Parry v2
-    ForceUnlock: zeros u165/u163 every frame so EVERY firesignal reaches PRY
-    No hookmetamethod, no VIM, no __namecall hook
+    Manual Spam Parry v3
+    Balanced ForceUnlock: u163 every frame + u165 every 100ms (10x/sec)
+    30 firesignal/sec — ~10 reach PRY, ~20 return cheap at u165
+    ParrySuccess instant re-fire for clash survival
 ]]
 
 repeat task.wait() until game:IsLoaded()
@@ -91,16 +92,22 @@ local function FindU177()
     return _cachedU177
 end
 
--- Only force u163=false (the 1.3s animation lock)
--- u165 clears naturally at 0.625s via task.delay — this is KEY for performance:
---   With both forced: every firesignal runs full PRY VM (30 heavy calls/sec)
---   With only u163:   PRY runs once per 0.625s (~1.6/sec), rest return at u165 check = free
--- During clashes: OnParrySuccess clears u165 instantly → re-fire within 1 frame
+-- BALANCED ForceUnlock:
+--   u163 (animation lock 1.3s) → forced EVERY call (cheap, just a setupvalue)
+--   u165 (parrying lock 0.625s) → forced every 100ms (10x/sec instead of 30x)
+-- Result: ~10 PRY/sec (vs 30 before = heavy, vs 1.6 before = too slow)
+-- During clashes: ParrySuccess clears u165 server-side → re-fire instant
+local _lastU165Force = 0
 local function ForceUnlock()
     if not _setupvalue then return end
     local fn = FindU177()
     if not fn then return end
-    pcall(_setupvalue, fn, 3, false)  -- u163 = false (animation lock, the 1.3s one)
+    pcall(_setupvalue, fn, 3, false)  -- u163 = false (always, cheap)
+    local now = tick()
+    if now - _lastU165Force >= 0.1 then  -- u165 every 100ms = 10x/sec
+        _lastU165Force = now
+        pcall(_setupvalue, fn, 2, false)  -- u165 = false (triggers PRY)
+    end
 end
 
 -- Mute the click sound so firesignal doesn't spam audio
