@@ -44,98 +44,162 @@ local C = {
 }
 
 -- ===================== REMOTE CAPTURE ENGINE ===================== --
--- Pure remote replay — zero firesignal, zero ForceUnlock, zero PRY VM
--- Step 1: Hook __namecall to capture parry remote + args on first manual parry
--- Step 2: Spam remote:FireServer(args) directly = near zero FPS cost
+-- Step 1: hookfunction on FireServer → capture remote + args on first manual parry
+-- Step 2: Rate-limited replay via origFireServer → avoids server kick
+--
+-- hookfunction hooks the C closure directly — intercepts ALL call patterns
+-- including Luraph VM's __index+CALL decomposition where __namecall never fires.
+-- After capture the hook auto-cleans to minimize anti-cheat detection window.
 
 local _parryRemote = nil
 local _parryArgs = nil
 local _remoteCaptured = false
 local _hookInstalled = false
+local _origFireServer = nil   -- original unhooked FireServer, used for spam
 
--- Install the __namecall hook at startup
+-- Helper: check if Instance is a direct child of ReplicatedStorage.Remotes
+local function isInRemotes(inst)
+    local ok, result = pcall(function()
+        local p = inst.Parent
+        return p and p.Name == "Remotes"
+            and p.Parent == game:GetService("ReplicatedStorage")
+    end)
+    return ok and result
+end
+
 do
-    -- Validate required exploit functions
-    local _ok_hm,  _hm  = pcall(function() return hookmetamethod end)
-    local _ok_nc,  _nc   = pcall(function() return newcclosure end)
-    local _ok_cc,  _cc   = pcall(function() return checkcaller end)
-    local _ok_gnm, _gnm  = pcall(function() return getnamecallmethod end)
+    -- ─── DIAGNOSTICS ───
+    pcall(function()
+        local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+        if remotes then
+            warn("[MSP] Remotes folder contents:")
+            for _, child in ipairs(remotes:GetChildren()) do
+                warn("  → " .. child.Name .. " [" .. child.ClassName .. "]")
+            end
+        else
+            warn("[MSP] ⚠ No 'Remotes' folder in ReplicatedStorage")
+        end
+    end)
 
-    local ready = _ok_hm and typeof(_hm) == "function"
-               and _ok_nc and typeof(_nc) == "function"
-               and _ok_cc and typeof(_cc) == "function"
-               and _ok_gnm and typeof(_gnm) == "function"
+    -- Resolve exploit functions (safe access)
+    local _hf, _hm, _nc, _cc, _gnm
+    pcall(function() _hf  = hookfunction or replaceclosure end)
+    pcall(function() _hm  = hookmetamethod end)
+    pcall(function() _nc  = newcclosure end)
+    pcall(function() _cc  = checkcaller end)
+    pcall(function() _gnm = getnamecallmethod end)
 
-    if ready then
-        -- PRIMARY: function(...) pattern — avoids varargs corruption
-        -- Return oldNamecall(...) forwards ALL args including self untouched
+    local wrap = typeof(_nc) == "function" and _nc or function(f) return f end
+
+    -- ─── STRATEGY 1: hookfunction (PRIMARY) ───
+    local function TryHookFunction()
+        if typeof(_hf) ~= "function" then return false end
+        if typeof(_cc) ~= "function" then return false end
+
         local ok, err = pcall(function()
-            local oldNamecall
-            oldNamecall = _hm(game, "__namecall", _nc(function(...)
-                local method = _gnm()
+            local probe = Instance.new("RemoteEvent")
+            local rawFS = probe.FireServer
+            probe:Destroy()
 
-                -- Only intercept GAME code (not our own exploit calls)
-                if not _cc() and method == "FireServer" then
-                    local self = ...
-                    if typeof(self) == "Instance" and self:IsA("RemoteEvent") then
-                        local p = self.Parent
-                        -- Match by name, not stale reference
-                        if p and p.Name == "Remotes" then
+            local origFS
+            origFS = _hf(rawFS, wrap(function(...)
+                local self = ...
+
+                if not _cc() then
+                    pcall(function()
+                        if typeof(self) == "Instance" and self:IsA("RemoteEvent")
+                            and isInRemotes(self) then
+                            -- Always refresh args (handles time-based encryption)
                             _parryRemote = self
                             _parryArgs = {select(2, ...)}
-                            _remoteCaptured = true
-                            warn("[MSP] Remote captured: " .. self.Name)
+                            if not _remoteCaptured then
+                                _remoteCaptured = true
+                                warn("[MSP] ✓ Remote captured: " .. self.Name)
+                                -- Auto-cleanup: restore original after capture
+                                -- Minimizes anti-cheat detection window
+                                task.delay(0.5, function()
+                                    pcall(function() _hf(rawFS, origFS) end)
+                                    warn("[MSP] Hook cleaned — using captured data")
+                                end)
+                            end
                         end
-                    end
+                    end)
                 end
 
-                return oldNamecall(...)
+                return origFS(...)
             end))
-            _hookInstalled = true
+
+            -- Save original for direct spam (bypasses hook entirely)
+            _origFireServer = origFS
         end)
 
-        -- FALLBACK: try without newcclosure if primary failed
-        if not ok then
-            warn("[MSP] Primary hook failed (" .. tostring(err) .. "), trying fallback...")
-            local ok2, err2 = pcall(function()
-                local oldNamecall
-                oldNamecall = _hm(game, "__namecall", function(...)
-                    local method = _gnm()
+        if ok then
+            warn("[MSP] Hook installed via hookfunction ✓")
+            return true
+        else
+            warn("[MSP] hookfunction failed: " .. tostring(err))
+            return false
+        end
+    end
 
-                    if not _cc() and method == "FireServer" then
+    -- ─── STRATEGY 2: hookmetamethod __namecall (FALLBACK) ───
+    local function TryHookNamecall()
+        if typeof(_hm) ~= "function" then return false end
+        if typeof(_cc) ~= "function" then return false end
+        if typeof(_gnm) ~= "function" then return false end
+
+        local ok, err = pcall(function()
+            local oldNamecall
+            oldNamecall = _hm(game, "__namecall", wrap(function(...)
+                pcall(function(...)
+                    if not _cc() and _gnm() == "FireServer" then
                         local self = ...
-                        if typeof(self) == "Instance" and self:IsA("RemoteEvent") then
-                            local p = self.Parent
-                            if p and p.Name == "Remotes" then
-                                _parryRemote = self
-                                _parryArgs = {select(2, ...)}
+                        if typeof(self) == "Instance" and self:IsA("RemoteEvent")
+                            and isInRemotes(self) then
+                            _parryRemote = self
+                            _parryArgs = {select(2, ...)}
+                            if not _remoteCaptured then
                                 _remoteCaptured = true
-                                warn("[MSP] Remote captured (fallback): " .. self.Name)
+                                warn("[MSP] ✓ Remote captured (namecall): " .. self.Name)
                             end
                         end
                     end
+                end, ...)
+                return oldNamecall(...)
+            end))
+        end)
 
-                    return oldNamecall(...)
-                end)
-                _hookInstalled = true
-            end)
-
-            if not ok2 then
-                warn("[MSP] All hooks failed: " .. tostring(err2))
-            end
+        if ok then
+            warn("[MSP] Hook installed via __namecall (fallback) ✓")
+            return true
+        else
+            warn("[MSP] __namecall hook failed: " .. tostring(err))
+            return false
         end
+    end
+
+    -- ─── Try strategies in order ───
+    if TryHookFunction() then
+        _hookInstalled = true
+    elseif TryHookNamecall() then
+        _hookInstalled = true
     else
-        warn("[MSP] Missing exploit functions — hookmetamethod/newcclosure/checkcaller/getnamecallmethod")
+        warn("[MSP] ⚠ No hook installed")
     end
 end
 
 -- ===================== PARRY FIRE ===================== --
 
--- Direct remote fire — no firesignal, no PRY, no Sound, no Analytics
--- Just the raw remote:FireServer with captured args
+-- Uses _origFireServer (unhooked C closure) to bypass our hook entirely
+-- Falls back to :FireServer if original not available
 local function DirectParry()
     if _parryRemote and _parryArgs then
-        _parryRemote:FireServer(unpack(_parryArgs))
+        if _origFireServer then
+            -- Bypass hook — direct to original C closure
+            _origFireServer(_parryRemote, unpack(_parryArgs))
+        else
+            _parryRemote:FireServer(unpack(_parryArgs))
+        end
     end
 end
 
@@ -156,7 +220,6 @@ end
 local function StartSpam()
     StopSpam()
 
-    -- Remote not captured yet? User must parry manually first
     if not _remoteCaptured then
         warn("[MSP] Remote not captured — do one manual parry first!")
         return
@@ -166,37 +229,34 @@ local function StartSpam()
     spamSession = spamSession + 1
     local mySession = spamSession
 
-    -- PURE direct remote spam — ZERO firesignal, ZERO ForceUnlock, ZERO PRY
-    -- Only remote:FireServer(captured args) = near zero FPS cost
+    -- RATE-LIMITED spam — avoids server-side kick detection
+    -- Old approach: 180 raw FireServer/sec → instant kick
+    -- New approach: controlled rate + ParrySuccess instant re-fire
+    -- Power 1 = 3/sec, Power 10 = 20/sec (enough for every ball bounce)
+    local rate = 3 + (ParryPower - 1) * 17 / 9
+    local interval = 1 / rate
+    local lastFire = 0
 
-    -- Heartbeat fire (always)
+    warn("[MSP] Spam ON — rate: " .. math.floor(rate) .. "/sec")
+
+    -- Single Heartbeat connection with clock-based throttle
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
-        pcall(DirectParry)
+        local now = tick()
+        if now - lastFire >= interval then
+            lastFire = now
+            pcall(DirectParry)
+        end
     end)
 
-    -- RenderStepped fire (Power >= 4)
-    if ParryPower >= 4 then
-        spamConns[2] = RunService.RenderStepped:Connect(function()
-            if not SpamEnabled or spamSession ~= mySession then return end
-            pcall(DirectParry)
-        end)
-    end
-
-    -- Stepped fire (Power >= 7)
-    if ParryPower >= 7 then
-        spamConns[3] = RunService.Stepped:Connect(function()
-            if not SpamEnabled or spamSession ~= mySession then return end
-            pcall(DirectParry)
-        end)
-    end
-
-    -- ParrySuccess → instant re-fire
+    -- ParrySuccess → instant re-fire (bypasses rate limit)
+    -- When server confirms a parry, fire again ASAP to catch the next bounce
     local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
-    local parryRemote = remotes and remotes:FindFirstChild("ParrySuccess")
-    if parryRemote then
-        spamConns[4] = parryRemote.OnClientEvent:Connect(function()
+    local parrySuccess = remotes and remotes:FindFirstChild("ParrySuccess")
+    if parrySuccess then
+        spamConns[2] = parrySuccess.OnClientEvent:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
+            lastFire = tick()
             pcall(DirectParry)
         end)
     end
