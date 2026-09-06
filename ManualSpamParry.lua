@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.5.2'
+local MSP_VERSION = '1.5.3'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -70,10 +70,8 @@ pcall(function() _guv = getupvalues end)
 pcall(function() _suv = setupvalue end)
 
 -- Hook functions
-local _hf, _nc
+local _hf
 pcall(function() _hf = hookfunction or replaceclosure end)
-pcall(function() _nc = newcclosure end)
-local _wrap = typeof(_nc) == "function" and _nc or function(f) return f end
 
 -- VirtualInputManager for click fallback
 local _vim
@@ -85,7 +83,11 @@ warn("[MSP] hookfn=" .. tostring(typeof(_hf))
     .. " VIM=" .. tostring(_vim ~= nil))
 
 -- === STRATEGY 1: Hook ONLY ParryAttempt ===
--- Single hook, capture on first call, unhook immediately to avoid detection
+-- No newcclosure, no unhook inside callback (both crash on some executors)
+-- Unhook from separate thread after capture
+local _hookPA = nil     -- ParryAttempt remote ref (for unhook thread)
+local _hookOrig = nil   -- original FireServer ref (for unhook thread)
+
 pcall(function()
     if typeof(_hf) ~= "function" then return end
     local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes", 10)
@@ -94,22 +96,31 @@ pcall(function()
     if not pa then return end
 
     local origFS
-    origFS = _hf(pa.FireServer, _wrap(function(...)
+    origFS = _hf(pa.FireServer, function(...)
         if not _captured then
-            -- Capture args (no checkcaller - it returns true inside hooks)
             _parryRemote = pa
             _parryArgs = {select(2, ...)}
             _captured = true
             _origFireServer = origFS
             _parryMode = "direct"
-            warn("[MSP] >>> CAPTURED! Unhooking to avoid detection <<<")
-            -- Restore original FireServer immediately
-            pcall(function() _hf(pa.FireServer, origFS) end)
+            pcall(warn, "[MSP] >>> CAPTURED <<<")
         end
         return origFS(...)
-    end))
+    end)
+    _hookPA = pa
+    _hookOrig = origFS
     warn("[MSP] Hook on ParryAttempt (parry once to capture)")
 end)
+
+-- Unhook watcher: remove hook AFTER capture from a separate thread
+if _hookPA and _hookOrig and typeof(_hf) == "function" then
+    task.spawn(function()
+        while not _captured do task.wait(0.2) end
+        task.wait(0.2)
+        pcall(function() _hf(_hookPA.FireServer, _hookOrig) end)
+        warn("[MSP] Hook removed (stealth)")
+    end)
+end
 
 -- === FIRESIGNAL + FORCEUNLOCK ===
 
