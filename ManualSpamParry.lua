@@ -68,16 +68,16 @@ local function isInRemotes(inst)
 end
 
 do
-    -- ─── DIAGNOSTICS ───
+    -- === DIAGNOSTICS ===
     pcall(function()
         local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
         if remotes then
             warn("[MSP] Remotes folder contents:")
             for _, child in ipairs(remotes:GetChildren()) do
-                warn("  → " .. child.Name .. " [" .. child.ClassName .. "]")
+                warn("  > " .. child.Name .. " [" .. child.ClassName .. "]")
             end
         else
-            warn("[MSP] ⚠ No 'Remotes' folder in ReplicatedStorage")
+            warn("[MSP] No 'Remotes' folder in ReplicatedStorage!")
         end
     end)
 
@@ -91,7 +91,7 @@ do
 
     local wrap = typeof(_nc) == "function" and _nc or function(f) return f end
 
-    -- ─── STRATEGY 1: hookfunction (PRIMARY) ───
+    -- === STRATEGY 1: hookfunction (PRIMARY) ===
     local function TryHookFunction()
         if typeof(_hf) ~= "function" then return false end
         if typeof(_cc) ~= "function" then return false end
@@ -104,26 +104,20 @@ do
             local origFS
             origFS = _hf(rawFS, wrap(function(...)
                 local self = ...
+                local args = {select(2, ...)}
 
-                if not _cc() then
-                    pcall(function()
-                        if typeof(self) == "Instance" and self:IsA("RemoteEvent")
-                            and isInRemotes(self) then
-                            -- Always refresh args (handles time-based encryption)
-                            _parryRemote = self
-                            _parryArgs = {select(2, ...)}
-                            if not _remoteCaptured then
-                                _remoteCaptured = true
-                                warn("[MSP] ✓ Remote captured: " .. self.Name)
-                                -- Auto-cleanup: restore original after capture
-                                -- Minimizes anti-cheat detection window
-                                task.delay(0.5, function()
-                                    pcall(function() _hf(rawFS, origFS) end)
-                                    warn("[MSP] Hook cleaned — using captured data")
-                                end)
-                            end
-                        end
-                    end)
+                if not _cc() and typeof(self) == "Instance"
+                    and self:IsA("RemoteEvent") and isInRemotes(self) then
+                    _parryRemote = self
+                    _parryArgs = args
+                    if not _remoteCaptured then
+                        _remoteCaptured = true
+                        pcall(warn, "[MSP] OK Remote captured: " .. tostring(self.Name))
+                        task.delay(0.5, function()
+                            pcall(function() _hf(rawFS, origFS) end)
+                            pcall(warn, "[MSP] Hook cleaned")
+                        end)
+                    end
                 end
 
                 return origFS(...)
@@ -134,7 +128,7 @@ do
         end)
 
         if ok then
-            warn("[MSP] Hook installed via hookfunction ✓")
+            warn("[MSP] Hook installed via hookfunction OK")
             return true
         else
             warn("[MSP] hookfunction failed: " .. tostring(err))
@@ -142,7 +136,7 @@ do
         end
     end
 
-    -- ─── STRATEGY 2: hookmetamethod __namecall (FALLBACK) ───
+    -- === STRATEGY 2: hookmetamethod __namecall (FALLBACK) ===
     local function TryHookNamecall()
         if typeof(_hm) ~= "function" then return false end
         if typeof(_cc) ~= "function" then return false end
@@ -160,7 +154,7 @@ do
                             _parryArgs = {select(2, ...)}
                             if not _remoteCaptured then
                                 _remoteCaptured = true
-                                warn("[MSP] ✓ Remote captured (namecall): " .. self.Name)
+                                warn("[MSP] OK Remote captured (namecall): " .. self.Name)
                             end
                         end
                     end
@@ -170,7 +164,7 @@ do
         end)
 
         if ok then
-            warn("[MSP] Hook installed via __namecall (fallback) ✓")
+            warn("[MSP] Hook installed via __namecall (fallback) OK")
             return true
         else
             warn("[MSP] __namecall hook failed: " .. tostring(err))
@@ -178,13 +172,13 @@ do
         end
     end
 
-    -- ─── Try strategies in order ───
+    -- === Try strategies in order ===
     if TryHookFunction() then
         _hookInstalled = true
     elseif TryHookNamecall() then
         _hookInstalled = true
     else
-        warn("[MSP] ⚠ No hook installed")
+        warn("[MSP] No hook installed!")
     end
 end
 
@@ -237,7 +231,7 @@ local function StartSpam()
     local interval = 1 / rate
     local lastFire = 0
 
-    warn("[MSP] Spam ON — rate: " .. math.floor(rate) .. "/sec")
+    warn("[MSP] Spam ON - rate: " .. math.floor(rate) .. "/sec")
 
     -- Single Heartbeat connection with clock-based throttle
     spamConns[1] = RunService.Heartbeat:Connect(function()
