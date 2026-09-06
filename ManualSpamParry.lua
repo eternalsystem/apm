@@ -1,7 +1,7 @@
 --[[
     Manual Spam Parry v3
-    Balanced ForceUnlock: u163 every frame + u165 every 50ms (20x/sec)
-    30 firesignal/sec — ~20 reach PRY, ~10 return cheap at u165
+    Full ForceUnlock: u165 + u163 every call = ALL 30 firesignal/sec reach PRY
+    MuteClickSound + ParrySuccess re-fire for maximum clash survival
     ParrySuccess instant re-fire for clash survival
 ]]
 
@@ -92,22 +92,15 @@ local function FindU177()
     return _cachedU177
 end
 
--- BALANCED ForceUnlock:
---   u163 (animation lock 1.3s) → forced EVERY call (cheap, just a setupvalue)
---   u165 (parrying lock 0.625s) → forced every 100ms (10x/sec instead of 30x)
--- Result: ~10 PRY/sec (vs 30 before = heavy, vs 1.6 before = too slow)
--- During clashes: ParrySuccess clears u165 server-side → re-fire instant
-local _lastU165Force = 0
+-- FULL ForceUnlock: both u165 + u163 every call
+-- Every firesignal reaches PRY = maximum parry throughput
+-- MuteClickSound + 30/sec cap keep it lighter than raw every-frame
 local function ForceUnlock()
     if not _setupvalue then return end
     local fn = FindU177()
     if not fn then return end
-    pcall(_setupvalue, fn, 3, false)  -- u163 = false (always, cheap)
-    local now = tick()
-    if now - _lastU165Force >= 0.05 then  -- u165 every 50ms = 20x/sec
-        _lastU165Force = now
-        pcall(_setupvalue, fn, 2, false)  -- u165 = false (triggers PRY)
-    end
+    pcall(_setupvalue, fn, 2, false)  -- u165 = false (parrying lock)
+    pcall(_setupvalue, fn, 3, false)  -- u163 = false (animation lock)
 end
 
 -- Mute the click sound so firesignal doesn't spam audio
