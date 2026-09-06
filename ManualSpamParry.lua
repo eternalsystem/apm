@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.0.1'
+local MSP_VERSION = '1.0.3'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -122,6 +122,25 @@ local function ForceUnlock()
     end
 end
 
+-- Mute the click sound so firesignal doesn't spam audio
+-- We MUST use firesignal (direct call = kick, PRY checks debug.info stack)
+-- But we can silence Connection #1's Sound:Play overhead
+local function MuteClickSound()
+    pcall(function()
+        local hotbar = Player.PlayerGui:FindFirstChild("Hotbar")
+        if not hotbar then return end
+        local block = hotbar:FindFirstChild("Block")
+        if not block then return end
+        for _, desc in ipairs(block:GetDescendants()) do
+            if desc:IsA("Sound") then
+                desc.Volume = 0
+                desc.SoundId = ""   -- empty SoundId = Play() becomes instant no-op
+                desc.PlayOnRemove = false
+            end
+        end
+    end)
+end
+
 local function Setup()
     _cachedU177 = nil
     _cachedParryFn = nil
@@ -130,7 +149,8 @@ local function Setup()
     local block = hotbar:FindFirstChild("Block")
     if not block then return end
     activatedSignal = block.Activated
-    FindU177()  -- caches both _cachedU177 and _cachedParryFn
+    FindU177()
+    MuteClickSound()
     ForceUnlock()
 end
 
@@ -138,16 +158,10 @@ Setup()
 
 -- ===================== PARRY FIRE ===================== --
 
--- Direct call to Connection #3 (SwordsController) — bypasses:
---   • firesignal dispatch overhead
---   • Connection #1 (ClickSFX Sound:Play) — 0 cost instead of Sound overhead
---   • Connection #2 (Analytics) — 0 cost instead of data send
--- Result: ~66% less work per fire at same parry throughput
+-- firesignal ONLY — direct function call triggers PRY's debug.info stack check = kick
 local function ParrySignal()
-    if _cachedParryFn then
-        _cachedParryFn()
-    elseif activatedSignal then
-        firesignal(activatedSignal)  -- fallback if direct cache failed
+    if activatedSignal then
+        firesignal(activatedSignal)
     end
 end
 
@@ -174,23 +188,27 @@ local function StartSpam()
 
     ForceUnlock()
 
-    -- Triple-fire: Heartbeat + RenderStepped + Stepped = ~180 fires/sec at 60fps
-    -- Power slider controls how many reach PRY (heavy) vs bounce at u165 (free)
-    -- Power 10: ALL reach PRY = max parry, heavy FPS
-    -- Power 5: ~6 PRY/sec, rest bounce = light FPS
-    spamConns[1] = RunService.Heartbeat:Connect(function()
+    -- OPTIMIZED triple-fire: 180 fires/sec but only ~60 PRY/sec
+    -- ForceUnlock ONLY in Heartbeat (1x per frame) — the expensive part
+    -- RenderStepped + Stepped fire WITHOUT ForceUnlock — they bounce at u165 = nearly free
+    --   EXCEPT when u165 is naturally false (after 0.625s clear or ParrySuccess) → bonus PRY
+    -- Result: same 180 fires/sec coverage, 3x less PRY VM load
+    -- Power slider still controls how often u165 is forced in the Heartbeat handler
+
+    -- 1) RenderStepped — fire only, no unlock (cheap bounce or bonus catch)
+    spamConns[1] = RunService.RenderStepped:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
-        ForceUnlock()
         pcall(fireFn)
     end)
 
-    spamConns[2] = RunService.RenderStepped:Connect(function()
+    -- 2) Stepped — fire only, no unlock (cheap bounce or bonus catch)
+    spamConns[2] = RunService.Stepped:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
-        ForceUnlock()
         pcall(fireFn)
     end)
 
-    spamConns[3] = RunService.Stepped:Connect(function()
+    -- 3) Heartbeat — ForceUnlock + fire (the ONE that guarantees PRY per frame)
+    spamConns[3] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
         ForceUnlock()
         pcall(fireFn)
