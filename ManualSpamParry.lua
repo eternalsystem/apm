@@ -176,25 +176,33 @@ local function StartSpam()
 
     ForceUnlock()
 
-    -- 30 firesignal/sec — but only ~1.6/sec actually reach PRY (heavy)
-    -- the other ~28/sec return at u165 check = nearly free
-    -- During clash: ParrySuccess clears u165 → next fire reaches PRY within 33ms
-    local lastFire = 0
+    -- Triple-fire: Heartbeat + RenderStepped + Stepped = ~180 fires/sec at 60fps
+    -- Power slider controls how many reach PRY (heavy) vs bounce at u165 (free)
+    -- Power 10: ALL reach PRY = max parry, heavy FPS
+    -- Power 5: ~6 PRY/sec, rest bounce = light FPS
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
         ForceUnlock()
-        local now = tick()
-        if now - lastFire >= 0.033 then
-            lastFire = now
-            pcall(fireFn)
-        end
+        pcall(fireFn)
     end)
 
-    -- ParrySuccess → instant re-fire (don't wait 33ms for next Heartbeat)
+    spamConns[2] = RunService.RenderStepped:Connect(function()
+        if not SpamEnabled or spamSession ~= mySession then return end
+        ForceUnlock()
+        pcall(fireFn)
+    end)
+
+    spamConns[3] = RunService.Stepped:Connect(function()
+        if not SpamEnabled or spamSession ~= mySession then return end
+        ForceUnlock()
+        pcall(fireFn)
+    end)
+
+    -- ParrySuccess → instant re-fire (don't wait for next frame)
     local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
     local parryRemote = remotes and remotes:FindFirstChild("ParrySuccess")
     if parryRemote then
-        spamConns[2] = parryRemote.OnClientEvent:Connect(function()
+        spamConns[4] = parryRemote.OnClientEvent:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
             ForceUnlock()
             pcall(fireFn)
