@@ -1,9 +1,10 @@
 --[[
-    Manual Spam Parry v3
-    Full ForceUnlock: u165 + u163 every call = ALL 30 firesignal/sec reach PRY
-    MuteClickSound + ParrySuccess re-fire for maximum clash survival
-    ParrySuccess instant re-fire for clash survival
+    Manual Spam Parry
+    Power slider ForceUnlock + ParrySuccess instant re-fire
+    MuteClickSound for audio optimization
 ]]
+
+local MSP_VERSION = '1.0.0'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -272,10 +273,21 @@ Title.TextSize = 15
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Header
 
+local VersionLabel = Instance.new('TextLabel')
+VersionLabel.Size = UDim2.fromOffset(40, 14)
+VersionLabel.Position = UDim2.fromOffset(118, 6)
+VersionLabel.BackgroundTransparency = 1
+VersionLabel.Text = 'v' .. MSP_VERSION
+VersionLabel.TextColor3 = C.textDim
+VersionLabel.FontFace = Font_Regular
+VersionLabel.TextSize = 9
+VersionLabel.TextXAlignment = Enum.TextXAlignment.Left
+VersionLabel.Parent = Header
+
 local StatusLabel = Instance.new('TextLabel')
 StatusLabel.Name = 'Status'
 StatusLabel.Size = UDim2.fromOffset(30, 14)
-StatusLabel.Position = UDim2.fromOffset(125, 14)
+StatusLabel.Position = UDim2.fromOffset(118, 22)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = 'OFF'
 StatusLabel.TextColor3 = C.textDim
