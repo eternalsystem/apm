@@ -91,14 +91,16 @@ local function FindU177()
     return _cachedU177
 end
 
--- Force u165=false, u163=false so the handler never blocks
--- Just 2 setupvalue calls = nearly free, no scanning
+-- Only force u163=false (the 1.3s animation lock)
+-- u165 clears naturally at 0.625s via task.delay — this is KEY for performance:
+--   With both forced: every firesignal runs full PRY VM (30 heavy calls/sec)
+--   With only u163:   PRY runs once per 0.625s (~1.6/sec), rest return at u165 check = free
+-- During clashes: OnParrySuccess clears u165 instantly → re-fire within 1 frame
 local function ForceUnlock()
     if not _setupvalue then return end
     local fn = FindU177()
     if not fn then return end
-    pcall(_setupvalue, fn, 2, false)  -- u165 = false (parrying flag)
-    pcall(_setupvalue, fn, 3, false)  -- u163 = false (animation flag)
+    pcall(_setupvalue, fn, 3, false)  -- u163 = false (animation lock, the 1.3s one)
 end
 
 -- Mute the click sound so firesignal doesn't spam audio
@@ -161,29 +163,26 @@ local function StartSpam()
 
     ForceUnlock()
 
-    -- Adaptive rate: 30/sec idle → 60/sec during clash
-    -- ParrySuccess = clash detected → boost for 2 seconds
+    -- 30 firesignal/sec — but only ~1.6/sec actually reach PRY (heavy)
+    -- the other ~28/sec return at u165 check = nearly free
+    -- During clash: ParrySuccess clears u165 → next fire reaches PRY within 33ms
     local lastFire = 0
-    local boostUntil = 0
-
     spamConns[1] = RunService.Heartbeat:Connect(function()
         if not SpamEnabled or spamSession ~= mySession then return end
         ForceUnlock()
         local now = tick()
-        local interval = now < boostUntil and 0.016 or 0.033
-        if now - lastFire >= interval then
+        if now - lastFire >= 0.033 then
             lastFire = now
             pcall(fireFn)
         end
     end)
 
-    -- ParrySuccess → boost to 60/sec + instant re-fire
+    -- ParrySuccess → instant re-fire (don't wait 33ms for next Heartbeat)
     local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
     local parryRemote = remotes and remotes:FindFirstChild("ParrySuccess")
     if parryRemote then
         spamConns[2] = parryRemote.OnClientEvent:Connect(function()
             if not SpamEnabled or spamSession ~= mySession then return end
-            boostUntil = tick() + 2
             ForceUnlock()
             pcall(fireFn)
         end)
