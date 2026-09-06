@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.5.1'
+local MSP_VERSION = '1.5.2'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -70,10 +70,9 @@ pcall(function() _guv = getupvalues end)
 pcall(function() _suv = setupvalue end)
 
 -- Hook functions
-local _hf, _nc, _cc
+local _hf, _nc
 pcall(function() _hf = hookfunction or replaceclosure end)
 pcall(function() _nc = newcclosure end)
-pcall(function() _cc = checkcaller end)
 local _wrap = typeof(_nc) == "function" and _nc or function(f) return f end
 
 -- VirtualInputManager for click fallback
@@ -86,9 +85,9 @@ warn("[MSP] hookfn=" .. tostring(typeof(_hf))
     .. " VIM=" .. tostring(_vim ~= nil))
 
 -- === STRATEGY 1: Hook ONLY ParryAttempt ===
--- Single hook on one remote = no anti-cheat trigger
+-- Single hook, capture on first call, unhook immediately to avoid detection
 pcall(function()
-    if typeof(_hf) ~= "function" or typeof(_cc) ~= "function" then return end
+    if typeof(_hf) ~= "function" then return end
     local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes", 10)
     if not Remotes then return end
     local pa = Remotes:FindFirstChild("ParryAttempt")
@@ -96,20 +95,20 @@ pcall(function()
 
     local origFS
     origFS = _hf(pa.FireServer, _wrap(function(...)
-        if not _captured and not _cc() then
-            local self = ...
-            if typeof(self) == "Instance" and self == pa then
-                _parryRemote = self
-                _parryArgs = {select(2, ...)}
-                _captured = true
-                _origFireServer = origFS
-                _parryMode = "direct"
-                warn("[MSP] >>> CAPTURED ParryAttempt args! Direct mode ON <<<")
-            end
+        if not _captured then
+            -- Capture args (no checkcaller - it returns true inside hooks)
+            _parryRemote = pa
+            _parryArgs = {select(2, ...)}
+            _captured = true
+            _origFireServer = origFS
+            _parryMode = "direct"
+            warn("[MSP] >>> CAPTURED! Unhooking to avoid detection <<<")
+            -- Restore original FireServer immediately
+            pcall(function() _hf(pa.FireServer, origFS) end)
         end
         return origFS(...)
     end))
-    warn("[MSP] Hook installed on ParryAttempt (waiting for 1 manual parry)")
+    warn("[MSP] Hook on ParryAttempt (parry once to capture)")
 end)
 
 -- === FIRESIGNAL + FORCEUNLOCK ===
