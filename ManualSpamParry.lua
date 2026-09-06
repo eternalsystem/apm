@@ -25,6 +25,7 @@ local activeListener = nil
 
 local ActivateMode   = 'Toggle'
 local IsAnchored     = false
+local ParryPower     = 10   -- 1-10: controls u165 force rate (10=every call, 1=light)
 
 -- ===================== COLORS ===================== --
 
@@ -92,15 +93,26 @@ local function FindU177()
     return _cachedU177
 end
 
--- FULL ForceUnlock: both u165 + u163 every call
--- Every firesignal reaches PRY = maximum parry throughput
--- MuteClickSound + 30/sec cap keep it lighter than raw every-frame
+-- ForceUnlock: u163 always + u165 based on ParryPower slider
+-- Power 10 = u165 every call (30 PRY/sec, heavy)
+-- Power  5 = u165 every 165ms (~6 PRY/sec, medium)
+-- Power  1 = u165 every 300ms (~3 PRY/sec, light)
+local _lastU165Force = 0
 local function ForceUnlock()
     if not _setupvalue then return end
     local fn = FindU177()
     if not fn then return end
-    pcall(_setupvalue, fn, 2, false)  -- u165 = false (parrying lock)
-    pcall(_setupvalue, fn, 3, false)  -- u163 = false (animation lock)
+    pcall(_setupvalue, fn, 3, false)  -- u163 = false (always)
+    if ParryPower >= 10 then
+        pcall(_setupvalue, fn, 2, false)  -- u165 every call
+    else
+        local interval = (10 - ParryPower) * 0.033  -- 9→33ms, 5→165ms, 1→297ms
+        local now = tick()
+        if now - _lastU165Force >= interval then
+            _lastU165Force = now
+            pcall(_setupvalue, fn, 2, false)
+        end
+    end
 end
 
 -- Mute the click sound so firesignal doesn't spam audio
@@ -227,8 +239,8 @@ local Font_Regular = Font.new('rbxasset://fonts/families/GothamSSm.json', Enum.F
 
 local Panel = Instance.new('Frame')
 Panel.Name = 'Panel'
-Panel.Size = UDim2.fromOffset(320, 198)
-Panel.Position = UDim2.new(0.5, -160, 0.5, -99)
+Panel.Size = UDim2.fromOffset(320, 242)
+Panel.Position = UDim2.new(0.5, -160, 0.5, -121)
 Panel.BackgroundColor3 = C.panel
 Panel.BackgroundTransparency = 0
 Panel.BorderSizePixel = 0
@@ -380,18 +392,120 @@ activateBindBtn.TextSize = 13
 local modeBtn = MakeRow(Panel, 100, 'Mode')
 modeBtn.Text = ActivateMode .. '  ▼'
 
+-- Power slider row
+local powerRow = Instance.new('Frame')
+powerRow.Size = UDim2.new(1, -36, 0, 34)
+powerRow.Position = UDim2.fromOffset(18, 134)
+powerRow.BackgroundTransparency = 1
+powerRow.Parent = Panel
+
+local powerLabel = Instance.new('TextLabel')
+powerLabel.Size = UDim2.new(0, 50, 1, 0)
+powerLabel.BackgroundTransparency = 1
+powerLabel.Text = 'Power'
+powerLabel.TextColor3 = C.textMid
+powerLabel.FontFace = Font_Regular
+powerLabel.TextSize = 13
+powerLabel.TextXAlignment = Enum.TextXAlignment.Left
+powerLabel.Parent = powerRow
+
+local powerValue = Instance.new('TextLabel')
+powerValue.Size = UDim2.fromOffset(28, 28)
+powerValue.Position = UDim2.new(1, -28, 0.5, -14)
+powerValue.BackgroundTransparency = 1
+powerValue.Text = tostring(ParryPower)
+powerValue.TextColor3 = C.white
+powerValue.FontFace = Font_Bold
+powerValue.TextSize = 13
+powerValue.TextXAlignment = Enum.TextXAlignment.Right
+powerValue.Parent = powerRow
+
+-- Slider track
+local sliderTrack = Instance.new('TextButton')
+sliderTrack.Size = UDim2.fromOffset(150, 12)
+sliderTrack.Position = UDim2.new(1, -188, 0.5, -6)
+sliderTrack.BackgroundColor3 = C.surface
+sliderTrack.Text = ''
+sliderTrack.AutoButtonColor = false
+sliderTrack.BorderSizePixel = 0
+sliderTrack.Parent = powerRow
+Instance.new('UICorner', sliderTrack).CornerRadius = UDim.new(1, 0)
+local trackStroke = Instance.new('UIStroke', sliderTrack)
+trackStroke.Color = C.border
+trackStroke.Thickness = 1
+
+-- Slider fill
+local sliderFill = Instance.new('Frame')
+sliderFill.Size = UDim2.new(1, 0, 1, 0) -- starts at 100% (power=10)
+sliderFill.BackgroundColor3 = C.white
+sliderFill.BorderSizePixel = 0
+sliderFill.Parent = sliderTrack
+Instance.new('UICorner', sliderFill).CornerRadius = UDim.new(1, 0)
+
+-- Slider handle
+local sliderHandle = Instance.new('Frame')
+sliderHandle.Size = UDim2.fromOffset(16, 16)
+sliderHandle.Position = UDim2.new(1, -8, 0.5, -8) -- right edge at power=10
+sliderHandle.BackgroundColor3 = C.white
+sliderHandle.BorderSizePixel = 0
+sliderHandle.ZIndex = 2
+sliderHandle.Parent = sliderTrack
+Instance.new('UICorner', sliderHandle).CornerRadius = UDim.new(1, 0)
+
+local function UpdateSlider()
+    local pct = (ParryPower - 1) / 9
+    sliderFill.Size = UDim2.new(pct, 0, 1, 0)
+    sliderHandle.Position = UDim2.new(pct, -8, 0.5, -8)
+    powerValue.Text = tostring(ParryPower)
+end
+
+local sliderDragging = false
+
+local function SetPowerFromX(absX)
+    local trackAbsX = sliderTrack.AbsolutePosition.X
+    local trackW = sliderTrack.AbsoluteSize.X
+    local rel = math.clamp((absX - trackAbsX) / trackW, 0, 1)
+    ParryPower = math.clamp(math.floor(rel * 9 + 1.5), 1, 10)
+    UpdateSlider()
+end
+
+sliderTrack.MouseButton1Down:Connect(function()
+    sliderDragging = true
+end)
+
+sliderTrack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        sliderDragging = true
+        SetPowerFromX(input.Position.X)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if sliderDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        SetPowerFromX(input.Position.X)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        sliderDragging = false
+    end
+end)
+
+UpdateSlider()
+
 -- Divider
 local SectionDiv = Instance.new('Frame')
 SectionDiv.Size = UDim2.new(1, 0, 0, 1)
-SectionDiv.Position = UDim2.fromOffset(0, 138)
+SectionDiv.Position = UDim2.fromOffset(0, 180)
 SectionDiv.BackgroundColor3 = C.divider
 SectionDiv.BorderSizePixel = 0
 SectionDiv.Parent = Panel
 
 -- UI section
-MakeSectionLabel(Panel, 144, 'UI')
+MakeSectionLabel(Panel, 186, 'UI')
 
-local uiBindBtn, uiBindStroke = MakeRow(Panel, 160, 'Show / Hide')
+local uiBindBtn, uiBindStroke = MakeRow(Panel, 202, 'Show / Hide')
 uiBindBtn.Text = '[' .. GetBindName(UIBind) .. ']'
 uiBindBtn.FontFace = Font_Semi
 uiBindBtn.TextSize = 13
