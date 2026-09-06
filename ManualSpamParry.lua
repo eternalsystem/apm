@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.5.3'
+local MSP_VERSION = '1.5.4'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -83,10 +83,11 @@ warn("[MSP] hookfn=" .. tostring(typeof(_hf))
     .. " VIM=" .. tostring(_vim ~= nil))
 
 -- === STRATEGY 1: Hook ONLY ParryAttempt ===
--- No newcclosure, no unhook inside callback (both crash on some executors)
--- Unhook from separate thread after capture
+-- Hook arms after 3s delay to skip background fires at game load.
+-- No newcclosure, no unhook inside callback.
 local _hookPA = nil     -- ParryAttempt remote ref (for unhook thread)
 local _hookOrig = nil   -- original FireServer ref (for unhook thread)
+local _hookArmed = false -- true after 3s delay (skip background noise)
 
 pcall(function()
     if typeof(_hf) ~= "function" then return end
@@ -97,7 +98,7 @@ pcall(function()
 
     local origFS
     origFS = _hf(pa.FireServer, function(...)
-        if not _captured then
+        if not _captured and _hookArmed then
             _parryRemote = pa
             _parryArgs = {select(2, ...)}
             _captured = true
@@ -109,7 +110,12 @@ pcall(function()
     end)
     _hookPA = pa
     _hookOrig = origFS
-    warn("[MSP] Hook on ParryAttempt (parry once to capture)")
+    -- Arm after 3s to skip background ParryAttempt fires
+    task.delay(3, function()
+        _hookArmed = true
+        warn("[MSP] Hook armed - parry once to capture")
+    end)
+    warn("[MSP] Hook installed (arming in 3s...)")
 end)
 
 -- Unhook watcher: remove hook AFTER capture from a separate thread
