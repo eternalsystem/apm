@@ -1,7 +1,7 @@
 --[[
     Manual Spam Parry v3
-    Balanced ForceUnlock: u163 every frame + u165 every 100ms (10x/sec)
-    30 firesignal/sec — ~10 reach PRY, ~20 return cheap at u165
+    Balanced ForceUnlock: u163 every frame + u165 every 50ms (20x/sec)
+    30 firesignal/sec — ~20 reach PRY, ~10 return cheap at u165
     ParrySuccess instant re-fire for clash survival
 ]]
 
@@ -104,7 +104,7 @@ local function ForceUnlock()
     if not fn then return end
     pcall(_setupvalue, fn, 3, false)  -- u163 = false (always, cheap)
     local now = tick()
-    if now - _lastU165Force >= 0.1 then  -- u165 every 100ms = 10x/sec
+    if now - _lastU165Force >= 0.05 then  -- u165 every 50ms = 20x/sec
         _lastU165Force = now
         pcall(_setupvalue, fn, 2, false)  -- u165 = false (triggers PRY)
     end
