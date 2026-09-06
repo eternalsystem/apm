@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.4.0'
+local MSP_VERSION = '1.4.1'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -193,6 +193,32 @@ local function DoParry()
     end
 end
 
+-- Find the sword/Block tool in Character or Backpack
+local function FindBlockTool()
+    local char = Player.Character
+
+    -- Try "Block" in Character then Backpack
+    local block = nil
+    if char then block = char:FindFirstChild("Block") end
+    if not block then
+        pcall(function() block = Player.Backpack:FindFirstChild("Block") end)
+    end
+    if block then return block end
+
+    -- Try any Tool (Blade Ball may rename the sword)
+    if char then
+        for _, v in ipairs(char:GetChildren()) do
+            if v:IsA("Tool") then return v end
+        end
+    end
+    pcall(function()
+        for _, v in ipairs(Player.Backpack:GetChildren()) do
+            if v:IsA("Tool") then block = v end
+        end
+    end)
+    return block
+end
+
 -- Setup firesignal on character load
 local function SetupCharacter()
     _blockEvent = nil
@@ -204,26 +230,56 @@ local function SetupCharacter()
         local char = Player.Character
         if not char then return end
 
-        local block = char:FindFirstChild("Block")
-        if not block then
-            block = char:WaitForChild("Block", 15)
+        -- Search for tool with retries (up to 15s)
+        local block = nil
+        for attempt = 1, 30 do
+            block = FindBlockTool()
+            if block then break end
+            if attempt == 1 then
+                warn("[MSP] Searching for tool...")
+                pcall(function()
+                    for _, v in ipairs(char:GetChildren()) do
+                        warn("[MSP]  char: " .. v.Name .. " [" .. v.ClassName .. "]")
+                    end
+                    for _, v in ipairs(Player.Backpack:GetChildren()) do
+                        warn("[MSP]  bp: " .. v.Name .. " [" .. v.ClassName .. "]")
+                    end
+                end)
+            end
+            task.wait(0.5)
         end
+
         if not block then
-            warn("[MSP] Block tool not found")
+            warn("[MSP] No tool found after 15s!")
             return
         end
 
+        warn("[MSP] Tool: " .. block.Name .. " in " .. tostring(block.Parent))
         _blockEvent = block.Activated
 
-        -- Get connections for ForceUnlock + mute
+        -- Wait for PRY to connect handler (need >= 3 connections)
         if typeof(_gc) == "function" then
-            pcall(function()
-                local conns = _gc(_blockEvent)
-                warn("[MSP] Block.Activated connections: " .. #conns)
-                if #conns >= 1 then _soundConn = conns[1] end
-                if #conns >= 3 then _pryHandler = conns[3].Function end
-            end)
+            for attempt = 1, 20 do
+                local count = 0
+                pcall(function()
+                    local conns = _gc(_blockEvent)
+                    count = #conns
+                    if count >= 1 then _soundConn = conns[1] end
+                    if count >= 3 then _pryHandler = conns[3].Function end
+                end)
+                if _pryHandler then
+                    warn("[MSP] Got " .. count .. " connections - PRY handler OK")
+                    break
+                end
+                if attempt == 1 then
+                    warn("[MSP] Waiting for PRY connections (have " .. count .. ")...")
+                end
+                task.wait(0.5)
+            end
         end
+
+        -- Pre-clear guard flags so first parry works immediately
+        ForceUnlock()
 
         _engineReady = true
         warn("[MSP] Engine ready - firesignal"
@@ -274,8 +330,9 @@ local function StartSpam()
     spamSession = spamSession + 1
     local mySession = spamSession
 
-    -- Rate-limited: Power 1 = 3/sec, Power 10 = 20/sec
-    local rate = 3 + (ParryPower - 1) * 17 / 9
+    -- Rate-limited: Power 1 = 3/sec, Power 10 = 10/sec
+    -- Ball bounces 1-2x/sec, 10/sec is plenty + avoids kick
+    local rate = 3 + (ParryPower - 1) * 7 / 9
     local interval = 1 / rate
     local lastFire = 0
 
