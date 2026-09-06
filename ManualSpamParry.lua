@@ -4,7 +4,7 @@
     MuteClickSound for audio optimization
 ]]
 
-local MSP_VERSION = '1.2.0'
+local MSP_VERSION = '1.3.0'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -51,34 +51,82 @@ local C = {
 local _parryRemote = nil
 local _parryArgs = nil
 local _remoteCaptured = false
-
-local _hookmetamethod = typeof(hookmetamethod) == "function" and hookmetamethod or nil
-local _newcclosure = typeof(newcclosure) == "function" and newcclosure or nil
 local _hookInstalled = false
 
 -- Install the __namecall hook at startup
-if _hookmetamethod and _newcclosure then
-    pcall(function()
-        local Remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
-        if not Remotes then return end
+do
+    -- Validate required exploit functions
+    local _ok_hm,  _hm  = pcall(function() return hookmetamethod end)
+    local _ok_nc,  _nc   = pcall(function() return newcclosure end)
+    local _ok_cc,  _cc   = pcall(function() return checkcaller end)
+    local _ok_gnm, _gnm  = pcall(function() return getnamecallmethod end)
 
-        local oldNamecall
-        oldNamecall = _hookmetamethod(game, "__namecall", _newcclosure(function(self, ...)
-            local method = getnamecallmethod()
+    local ready = _ok_hm and typeof(_hm) == "function"
+               and _ok_nc and typeof(_nc) == "function"
+               and _ok_cc and typeof(_cc) == "function"
+               and _ok_gnm and typeof(_gnm) == "function"
 
-            if method == "FireServer" and typeof(self) == "Instance"
-                and self:IsA("RemoteEvent") and self.Parent == Remotes
-                and self.Name ~= "ParrySuccess" then
-                -- Capture the remote and the EXACT args PRY sent (already encrypted)
-                _parryRemote = self
-                _parryArgs = {...}
-                _remoteCaptured = true
+    if ready then
+        -- PRIMARY: function(...) pattern — avoids varargs corruption
+        -- Return oldNamecall(...) forwards ALL args including self untouched
+        local ok, err = pcall(function()
+            local oldNamecall
+            oldNamecall = _hm(game, "__namecall", _nc(function(...)
+                local method = _gnm()
+
+                -- Only intercept GAME code (not our own exploit calls)
+                if not _cc() and method == "FireServer" then
+                    local self = ...
+                    if typeof(self) == "Instance" and self:IsA("RemoteEvent") then
+                        local p = self.Parent
+                        -- Match by name, not stale reference
+                        if p and p.Name == "Remotes" then
+                            _parryRemote = self
+                            _parryArgs = {select(2, ...)}
+                            _remoteCaptured = true
+                            warn("[MSP] Remote captured: " .. self.Name)
+                        end
+                    end
+                end
+
+                return oldNamecall(...)
+            end))
+            _hookInstalled = true
+        end)
+
+        -- FALLBACK: try without newcclosure if primary failed
+        if not ok then
+            warn("[MSP] Primary hook failed (" .. tostring(err) .. "), trying fallback...")
+            local ok2, err2 = pcall(function()
+                local oldNamecall
+                oldNamecall = _hm(game, "__namecall", function(...)
+                    local method = _gnm()
+
+                    if not _cc() and method == "FireServer" then
+                        local self = ...
+                        if typeof(self) == "Instance" and self:IsA("RemoteEvent") then
+                            local p = self.Parent
+                            if p and p.Name == "Remotes" then
+                                _parryRemote = self
+                                _parryArgs = {select(2, ...)}
+                                _remoteCaptured = true
+                                warn("[MSP] Remote captured (fallback): " .. self.Name)
+                            end
+                        end
+                    end
+
+                    return oldNamecall(...)
+                end)
+                _hookInstalled = true
+            end)
+
+            if not ok2 then
+                warn("[MSP] All hooks failed: " .. tostring(err2))
             end
-
-            return oldNamecall(self, ...)
-        end))
-        _hookInstalled = true
-    end)
+        end
+    else
+        warn("[MSP] Missing exploit functions — hookmetamethod/newcclosure/checkcaller/getnamecallmethod")
+    end
 end
 
 -- ===================== PARRY FIRE ===================== --
