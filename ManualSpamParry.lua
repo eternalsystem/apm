@@ -4,7 +4,7 @@
     Near-zero FPS spam
 ]]
 
-local MSP_VERSION = '2.1.0'
+local MSP_VERSION = '2.1.1'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -63,8 +63,21 @@ pcall(function()
     if R then _paRemote = R:FindFirstChild("ParryAttempt") end
 end)
 
--- Hook installed flag (to avoid re-installing)
+-- Hook installed flag
 local _hookActive = false
+-- Pending spam: when true, StartSpam is called after capture
+local _pendingSpam = false
+
+-- Forward declarations
+local StartSpam
+local UpdateStatus
+
+-- Direct replay (near-zero FPS)
+local function DoParry()
+    if _origFireServer and _parryRemote and _parryArgs then
+        _origFireServer(_parryRemote, unpack(_parryArgs))
+    end
+end
 
 -- Install hook on ParryAttempt (called lazily, not at load time)
 local function InstallHook()
@@ -82,11 +95,17 @@ local function InstallHook()
             _captured = true
             _origFireServer = origFS
             pcall(warn, "[MSP] >>> CAPTURED <<<")
-            -- Unhook from separate thread
+            -- Unhook + auto-start spam from separate thread
             task.defer(function()
                 task.defer(function()
                     pcall(function() hf(_paRemote.FireServer, origFS) end)
                     pcall(warn, "[MSP] Hook removed")
+                    -- Auto-start spam if user pressed X
+                    if _pendingSpam then
+                        _pendingSpam = false
+                        pcall(StartSpam)
+                        pcall(UpdateStatus)
+                    end
                 end)
             end)
         end
@@ -94,13 +113,6 @@ local function InstallHook()
     end)
     _hookActive = true
     warn("[MSP] Hook on ParryAttempt - parry once to capture")
-end
-
--- Direct replay (near-zero FPS)
-local function DoParry()
-    if _origFireServer and _parryRemote and _parryArgs then
-        _origFireServer(_parryRemote, unpack(_parryArgs))
-    end
 end
 
 -- Setup
@@ -132,7 +144,7 @@ local function StopSpam()
     spamConns = {}
 end
 
-local function StartSpam()
+StartSpam = function()
     StopSpam()
 
     if not _engineReady then
@@ -141,9 +153,11 @@ local function StartSpam()
     end
 
     if not _captured then
-        -- Install hook and wait for manual parry
+        -- Install hook and set pending flag
         InstallHook()
+        _pendingSpam = true
         warn("[MSP] Parry once to start!")
+        UpdateStatus()
         return
     end
 
@@ -572,7 +586,7 @@ end)
 
 -- ==================== STATUS UPDATE ==================== --
 
-local function UpdateStatus()
+UpdateStatus = function()
     local label, color
     if not _engineReady then
         label = 'SETUP'
@@ -587,8 +601,9 @@ local function UpdateStatus()
         label = 'READY'
         color = Color3.fromRGB(80, 220, 80)
     else
-        label = 'READY'
-        color = Color3.fromRGB(80, 220, 80)
+        -- Not yet activated - press X to install hook
+        label = 'OFF'
+        color = C.textDim
     end
     StatusLabel.Text = label
     StatusLabel.TextColor3 = color
@@ -741,23 +756,11 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 -- ==================== WATCHER ==================== --
--- Poll for engine ready + capture state changes
 
 task.spawn(function()
     while not _engineReady do
         task.wait(0.5)
         UpdateStatus()
-    end
-    UpdateStatus()
-    -- Watch for capture (auto-start spam after manual parry)
-    while not _captured do
-        task.wait(0.2)
-        UpdateStatus()
-        -- If hook captured while waiting, start spam
-        if _captured and _hookActive then
-            StartSpam()
-            UpdateStatus()
-        end
     end
     UpdateStatus()
 end)
