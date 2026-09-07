@@ -4,7 +4,7 @@
     Near-zero FPS spam
 ]]
 
-local MSP_VERSION = '2.1.1'
+local MSP_VERSION = '2.2.0'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -52,9 +52,10 @@ local C = {
 -- Capture state
 local _parryRemote = nil
 local _parryArgs = nil
+local _parryArgsN = 0
 local _captured = false
-local _origFireServer = nil
 local _engineReady = false
+local _debugCount = 0
 
 -- ParryAttempt reference (normal game object, safe to access)
 local _paRemote = nil
@@ -74,8 +75,12 @@ local UpdateStatus
 
 -- Direct replay (near-zero FPS)
 local function DoParry()
-    if _origFireServer and _parryRemote and _parryArgs then
-        _origFireServer(_parryRemote, unpack(_parryArgs))
+    if _parryRemote and _parryArgs then
+        _parryRemote:FireServer(unpack(_parryArgs, 1, _parryArgsN))
+        _debugCount = _debugCount + 1
+        if _debugCount <= 3 then
+            warn("[MSP] DoParry fired #" .. _debugCount .. " args=" .. tostring(_parryArgsN))
+        end
     end
 end
 
@@ -91,18 +96,23 @@ local function InstallHook()
     origFS = hf(_paRemote.FireServer, function(...)
         if not _captured then
             _parryRemote = _paRemote
+            -- Capture args safely (skip self = first arg)
+            local n = select('#', ...) - 1
+            _parryArgsN = n
             _parryArgs = {select(2, ...)}
             _captured = true
-            _origFireServer = origFS
-            pcall(warn, "[MSP] >>> CAPTURED <<<")
+            _debugCount = 0
+            pcall(warn, "[MSP] >>> CAPTURED <<< args=" .. tostring(n))
             -- Unhook + auto-start spam from separate thread
             task.defer(function()
                 task.defer(function()
                     pcall(function() hf(_paRemote.FireServer, origFS) end)
+                    _hookActive = false
                     pcall(warn, "[MSP] Hook removed")
                     -- Auto-start spam if user pressed X
                     if _pendingSpam then
                         _pendingSpam = false
+                        pcall(warn, "[MSP] Auto-starting spam")
                         pcall(StartSpam)
                         pcall(UpdateStatus)
                     end
