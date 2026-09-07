@@ -1,10 +1,10 @@
 --[[
     Manual Spam Parry
-    Power slider ForceUnlock + ParrySuccess instant re-fire
-    MuteClickSound for audio optimization
+    Instant capture (hook+VIM+unhook in 2 frames)
+    Direct replay spam = near-zero FPS
 ]]
 
-local MSP_VERSION = '1.5.4'
+local MSP_VERSION = '2.0.0'
 
 repeat task.wait() until game:IsLoaded()
 
@@ -44,276 +44,135 @@ local C = {
 }
 
 -- ===================== PARRY ENGINE ===================== --
--- STRATEGY 1: Hook ONLY ParryAttempt remote -> capture on 1st parry
---   -> replay remote:FireServer(args) = near-zero FPS cost
--- STRATEGY 2: firesignal(tool.Activated) + ForceUnlock (fallback)
--- STRATEGY 3: VirtualInputManager click simulation (last resort)
+-- INSTANT CAPTURE: hook exists for ~2 frames only (when user presses X)
+--   1. Install hook on ParryAttempt
+--   2. VIM click triggers real parry pipeline -> hook captures args
+--   3. Unhook after 2 frames (~33ms) -> undetectable
+--   4. Spam direct replay = near-zero FPS
+-- FALLBACK: VIM click spam if capture fails
 
--- Remote capture state
+-- Capture state
 local _parryRemote = nil
 local _parryArgs = nil
 local _captured = false
 local _origFireServer = nil
-
--- Firesignal engine state
-local _blockEvent = nil      -- tool.Activated signal
-local _pryHandler = nil      -- Connection #3 handler (for ForceUnlock)
-local _soundConn = nil       -- Connection #1 (mute click during spam)
 local _engineReady = false
-local _parryMode = "none"    -- "direct", "firesignal", or "click"
+local _parryMode = "none"    -- "direct" or "click"
 
 -- Resolve exploit functions
-local _fs, _gc, _guv, _suv
-pcall(function() _fs  = firesignal end)
-pcall(function() _gc  = getconnections end)
-pcall(function() _guv = getupvalues end)
-pcall(function() _suv = setupvalue end)
-
--- Hook functions
 local _hf
 pcall(function() _hf = hookfunction or replaceclosure end)
 
--- VirtualInputManager for click fallback
+-- VirtualInputManager
 local _vim
 pcall(function() _vim = game:GetService("VirtualInputManager") end)
 
-warn("[MSP] hookfn=" .. tostring(typeof(_hf))
-    .. " firesignal=" .. tostring(typeof(_fs))
-    .. " getconns=" .. tostring(typeof(_gc))
-    .. " VIM=" .. tostring(_vim ~= nil))
-
--- === STRATEGY 1: Hook ONLY ParryAttempt ===
--- Hook arms after 3s delay to skip background fires at game load.
--- No newcclosure, no unhook inside callback.
-local _hookPA = nil     -- ParryAttempt remote ref (for unhook thread)
-local _hookOrig = nil   -- original FireServer ref (for unhook thread)
-local _hookArmed = false -- true after 3s delay (skip background noise)
-
+-- ParryAttempt reference
+local _paRemote = nil
 pcall(function()
-    if typeof(_hf) ~= "function" then return end
-    local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes", 10)
-    if not Remotes then return end
-    local pa = Remotes:FindFirstChild("ParryAttempt")
-    if not pa then return end
+    local R = game:GetService("ReplicatedStorage"):WaitForChild("Remotes", 10)
+    if R then _paRemote = R:FindFirstChild("ParryAttempt") end
+end)
 
+warn("[MSP] hookfn=" .. tostring(typeof(_hf))
+    .. " VIM=" .. tostring(_vim ~= nil)
+    .. " ParryAttempt=" .. tostring(_paRemote ~= nil))
+
+-- === INSTANT CAPTURE (called on first X press) ===
+-- Hook window: ~2 frames. PRY integrity checks run every ~1-5s.
+
+local function AttemptCapture()
+    if _captured then return true end
+    if typeof(_hf) ~= "function" or not _vim or not _paRemote then
+        warn("[MSP] Can't capture (missing hookfn/VIM/remote)")
+        return false
+    end
+
+    warn("[MSP] Capture: hook -> VIM click -> unhook...")
+
+    -- Step 1: Install hook
     local origFS
-    origFS = _hf(pa.FireServer, function(...)
-        if not _captured and _hookArmed then
-            _parryRemote = pa
+    origFS = _hf(_paRemote.FireServer, function(...)
+        if not _captured then
+            _parryRemote = _paRemote
             _parryArgs = {select(2, ...)}
             _captured = true
             _origFireServer = origFS
             _parryMode = "direct"
-            pcall(warn, "[MSP] >>> CAPTURED <<<")
         end
         return origFS(...)
     end)
-    _hookPA = pa
-    _hookOrig = origFS
-    -- Arm after 3s to skip background ParryAttempt fires
-    task.delay(3, function()
-        _hookArmed = true
-        warn("[MSP] Hook armed - parry once to capture")
-    end)
-    warn("[MSP] Hook installed (arming in 3s...)")
-end)
 
--- Unhook watcher: remove hook AFTER capture from a separate thread
-if _hookPA and _hookOrig and typeof(_hf) == "function" then
-    task.spawn(function()
-        while not _captured do task.wait(0.2) end
-        task.wait(0.2)
-        pcall(function() _hf(_hookPA.FireServer, _hookOrig) end)
-        warn("[MSP] Hook removed (stealth)")
-    end)
-end
-
--- === FIRESIGNAL + FORCEUNLOCK ===
-
--- ForceUnlock: zero boolean guard flags on PRY handler
-local function ForceUnlock()
-    if not _pryHandler or not _guv or not _suv then return end
+    -- Step 2: VIM click (triggers BaseUIS -> PRY -> FireServer through hook)
     pcall(function()
-        local uvs = _guv(_pryHandler)
-        for i, v in pairs(uvs) do
-            if v == true then
-                pcall(_suv, _pryHandler, i, false)
-            end
-        end
+        local vp = workspace.CurrentCamera.ViewportSize
+        _vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true, game, 0)
     end)
+
+    -- Step 3: Wait 2 frames for click to propagate through pipeline
+    RunService.Heartbeat:Wait()
+    RunService.Heartbeat:Wait()
+
+    -- Step 4: Mouse up + unhook
+    pcall(function()
+        local vp = workspace.CurrentCamera.ViewportSize
+        _vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 0)
+    end)
+    pcall(function() _hf(_paRemote.FireServer, origFS) end)
+
+    if _captured then
+        warn("[MSP] >>> CAPTURED - direct replay mode <<<")
+    else
+        warn("[MSP] Capture missed - VIM click fallback")
+        _parryMode = "click"
+    end
+    return _captured
 end
 
--- Strategy 1: Direct replay (near-zero FPS)
+-- Direct replay (near-zero FPS)
 local function DirectParry()
-    if not _parryRemote or not _parryArgs then return end
-    if _origFireServer then
+    if _origFireServer and _parryRemote and _parryArgs then
         _origFireServer(_parryRemote, unpack(_parryArgs))
-    else
-        _parryRemote:FireServer(unpack(_parryArgs))
     end
 end
 
--- Strategy 2: Firesignal parry
-local function FiresignalParry()
-    if not _blockEvent or not _fs then return end
-    ForceUnlock()
-    pcall(_fs, _blockEvent)
-end
-
--- Strategy 3: Click simulation
+-- VIM click (simulates real mouse click)
 local function ClickParry()
-    if _vim then
-        pcall(function()
-            local vp = workspace.CurrentCamera.ViewportSize
-            _vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true, game, 0)
-            task.defer(function()
-                pcall(function()
-                    _vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 0)
-                end)
+    if not _vim then return end
+    pcall(function()
+        local vp = workspace.CurrentCamera.ViewportSize
+        _vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true, game, 0)
+        task.defer(function()
+            pcall(function()
+                _vim:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 0)
             end)
         end)
-    end
+    end)
 end
 
--- Best available parry method
+-- Best available parry
 local function DoParry()
     if _captured then
         DirectParry()
-    elseif _parryMode == "firesignal" then
-        FiresignalParry()
     else
         ClickParry()
     end
 end
 
--- Dump children for diagnostics
-local function DumpChildren(label, parent)
-    pcall(function()
-        for _, v in ipairs(parent:GetChildren()) do
-            warn("[MSP]  " .. label .. ": " .. v.Name .. " [" .. v.ClassName .. "]")
-        end
-    end)
-end
-
--- Find any Tool with .Activated
-local function FindActivatedTool()
-    local function checkIn(parent)
-        local found = nil
-        pcall(function()
-            for _, child in ipairs(parent:GetChildren()) do
-                pcall(function()
-                    local sig = child.Activated
-                    if sig then found = child end
-                end)
-            end
-        end)
-        return found
-    end
-
-    local tool = nil
-    if Player.Character then tool = checkIn(Player.Character) end
-    if not tool then
-        pcall(function() tool = checkIn(Player.Backpack) end)
-    end
-    return tool
-end
-
--- Setup engine on character load
-local function SetupCharacter()
-    _blockEvent = nil
-    _pryHandler = nil
-    _soundConn = nil
-    _engineReady = false
-    -- Don't reset _parryMode if hook already captured
-    if not _captured then _parryMode = "none" end
-
-    task.spawn(function()
-        local char = Player.Character
-        if not char then return end
-
-        -- Dump Character + Backpack contents for diagnostics
-        warn("[MSP] === Character children ===")
-        DumpChildren("char", char)
-        warn("[MSP] === Backpack children ===")
-        pcall(function() DumpChildren("bp", Player.Backpack) end)
-
-        -- If hook already captured, we just need engine ready flag
-        if _captured then
-            _engineReady = true
-            warn("[MSP] Engine ready - mode: direct (hook captured)")
-            return
-        end
-
-        -- Search for tool with retries (up to 10s)
-        local tool = nil
-        for attempt = 1, 20 do
-            tool = FindActivatedTool()
-            if tool then break end
-            task.wait(0.5)
-        end
-
-        if tool then
-            warn("[MSP] Found tool: " .. tool.Name
-                .. " [" .. tool.ClassName .. "]"
-                .. " in " .. tostring(tool.Parent))
-            _blockEvent = tool.Activated
-
-            -- Wait for PRY connections (need >= 3)
-            if typeof(_gc) == "function" then
-                for attempt = 1, 20 do
-                    local count = 0
-                    pcall(function()
-                        local conns = _gc(_blockEvent)
-                        count = #conns
-                        if count >= 1 then _soundConn = conns[1] end
-                        if count >= 3 then _pryHandler = conns[3].Function end
-                    end)
-                    if _pryHandler then
-                        warn("[MSP] " .. count .. " connections - PRY handler OK")
-                        break
-                    end
-                    if attempt == 1 then
-                        warn("[MSP] Waiting for connections (" .. count .. ")...")
-                    end
-                    task.wait(0.5)
-                end
-            end
-
-            ForceUnlock()
-
-            if typeof(_fs) == "function" then
-                _parryMode = "firesignal"
-            else
-                _parryMode = "click"
-            end
-        else
-            warn("[MSP] No tool with .Activated found")
-            if _vim then
-                _parryMode = "click"
-                warn("[MSP] Using VIM click fallback")
-            else
-                warn("[MSP] Waiting for hook capture (parry once!)")
-                _parryMode = "click"
-            end
-        end
-
-        _engineReady = true
-        warn("[MSP] Engine ready - mode: " .. _parryMode
-            .. " ForceUnlock=" .. (_pryHandler and "OK" or "no")
-            .. " (parry once to upgrade to direct mode)")
-    end)
-end
-
--- Character setup + respawn
+-- Setup (just marks engine ready)
 task.spawn(function()
     if not Player.Character then Player.CharacterAdded:Wait() end
     task.wait(1)
-    SetupCharacter()
+    _engineReady = true
+    warn("[MSP] Ready - press X to activate")
 end)
 
 Player.CharacterAdded:Connect(function()
+    _captured = false
+    _parryMode = "none"
     task.wait(2)
-    SetupCharacter()
+    _engineReady = true
+    warn("[MSP] Respawn - ready")
 end)
 
 -- ===================== SPAM ===================== --
@@ -328,10 +187,6 @@ local function StopSpam()
         spamConns[i] = nil
     end
     spamConns = {}
-    -- Re-enable click sound
-    if _soundConn then
-        pcall(function() _soundConn:Enable() end)
-    end
 end
 
 local function StartSpam()
@@ -346,39 +201,41 @@ local function StartSpam()
     spamSession = spamSession + 1
     local mySession = spamSession
 
-    -- Rate-limited: Power 1 = 3/sec, Power 10 = 10/sec
-    -- Ball bounces 1-2x/sec, 10/sec is plenty + avoids kick
-    local rate = 3 + (ParryPower - 1) * 7 / 9
-    local interval = 1 / rate
-    local lastFire = 0
+    -- Attempt capture on first activation (runs in thread because it yields)
+    task.spawn(function()
+        if not _captured then
+            AttemptCapture()
+            if spamSession ~= mySession or not SpamEnabled then return end
+            pcall(UpdateStatus)
+        end
 
-    -- Mute click sound during spam (connection #1)
-    if _soundConn then
-        pcall(function() _soundConn:Disable() end)
-    end
+        local rate = 3 + (ParryPower - 1) * 7 / 9
+        local interval = 1 / rate
+        local lastFire = 0
 
-    warn("[MSP] Spam ON - " .. _parryMode .. " - " .. math.floor(rate) .. "/sec")
+        warn("[MSP] Spam ON - " .. _parryMode .. " - " .. math.floor(rate) .. "/sec")
 
-    -- Single Heartbeat with clock-based throttle
-    spamConns[1] = RunService.Heartbeat:Connect(function()
-        if not SpamEnabled or spamSession ~= mySession then return end
-        local now = tick()
-        if now - lastFire >= interval then
-            lastFire = now
-            pcall(DoParry)
+        -- Single Heartbeat with clock-based throttle
+        spamConns[1] = RunService.Heartbeat:Connect(function()
+            if not SpamEnabled or spamSession ~= mySession then return end
+            local now = tick()
+            if now - lastFire >= interval then
+                lastFire = now
+                pcall(DoParry)
+            end
+        end)
+
+        -- ParrySuccess = instant re-fire
+        local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+        local ps = remotes and remotes:FindFirstChild("ParrySuccess")
+        if ps then
+            spamConns[2] = ps.OnClientEvent:Connect(function()
+                if not SpamEnabled or spamSession ~= mySession then return end
+                lastFire = tick()
+                pcall(DoParry)
+            end)
         end
     end)
-
-    -- ParrySuccess = instant re-fire
-    local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
-    local ps = remotes and remotes:FindFirstChild("ParrySuccess")
-    if ps then
-        spamConns[2] = ps.OnClientEvent:Connect(function()
-            if not SpamEnabled or spamSession ~= mySession then return end
-            lastFire = tick()
-            pcall(DoParry)
-        end)
-    end
 end
 
 -- ===================== BIND HELPERS ===================== --
@@ -783,12 +640,9 @@ local function UpdateStatus()
     elseif SpamEnabled then
         label = _captured and 'ON' or 'ON*'
         color = C.white
-    elseif _captured then
+    else
         label = 'READY'
         color = Color3.fromRGB(80, 220, 80)
-    else
-        label = 'PARRY 1x'
-        color = Color3.fromRGB(255, 180, 50)
     end
     StatusLabel.Text = label
     StatusLabel.TextColor3 = color
@@ -944,18 +798,11 @@ end)
 -- Poll until engine ready, then keep watching for hook capture
 
 task.spawn(function()
-    -- Wait for engine
     while not _engineReady do
         task.wait(0.5)
         UpdateStatus()
     end
-    UpdateStatus()  -- show PARRY 1x or READY
-    -- Keep watching for hook capture (upgrades to direct mode)
-    while not _captured do
-        task.wait(0.5)
-        UpdateStatus()
-    end
-    UpdateStatus()  -- show READY (captured!)
+    UpdateStatus()
 end)
 
 -- Initial status
